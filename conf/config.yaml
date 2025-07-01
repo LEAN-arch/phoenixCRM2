@@ -1,8 +1,21 @@
+# conf/config.yaml
+
+# The 'defaults' list specifies the other configuration files to compose.
+# Hydra will look for 'data.yaml' and 'model.yaml' in the same directory.
+# '_self_' is a special keyword that means "include the keys from this file".
+# Placing it last ensures that any values defined here (like app_name)
+# will override values from the other files if there's a conflict.
 defaults:
-  - data: _self_   # Include all keys from data.yaml at this top level
-  - model: _self_  # Include all keys from model.yaml at this top level
+  - data    # Correct way to include data.yaml
+  - model   # Correct way to include model.yaml
+  - _self_  # Correct use to include this file's keys
 
 # App-level configurations can be defined here
 app_name: "RedShield AI: Phoenix v4.1"
 forecast_horizons_hours: [0.5, 1, 3, 6, 12, 24, 72]
 mapbox_api_key: ${oc.env:MAPBOX_API_KEY, null}
+
+# You can also define an empty 'ml_models' section here to ensure it always exists,
+# preventing potential KeyErrors if not defined elsewhere.
+ml_models:
+  tcnn_name: "phoenix_tcnn"
