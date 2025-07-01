@@ -5,27 +5,7 @@ description = "Proactive Emergency Response Platform with Production-Grade Archi
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
 license = "MIT"
-
-[tool.poetry.dependencies]
-python = "^3.10"
-streamlit = "~1.38.0"
-pandas = "~2.2.3"
-numpy = "~1.26.4"
-scipy = "~1.13.1"
-geopandas = "~1.0.1"
-shapely = "~2.0.6"
-networkx = "~3.3"
-plotly = "~5.24.1"
-folium = "~0.17.0"
-streamlit-folium = "~0.22.0"
-matplotlib = "~3[tool.poetry]
-name = "redshield-phoenix"
-version = "4.1.0"
-description = "Proactive Emergency Response Platform with Production-Grade Architecture"
-authors = ["Your Name <you@example.com>"]
-readme = "README.md"
-license = "MIT"
-package-mode = false  # <-- THIS IS THE FIX. It tells Poetry not to install the local project.
+package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -42,40 +22,28 @@ streamlit-folium = "~0.22.0"
 matplotlib = "~3.9.2"
 reportlab = "~4.2.2"
 requests = "~2.32.3"
-
-# Optional ML dependencies are now defined as extras for flexible installation
 torch = { version = "~2.4.1", optional = true }
 pgmpy = { version = "~0.1.26", optional = true }
 
-
 [tool.poetry.group.dev.dependencies]
-# Dependencies only needed for development, testing, and code quality
 pytest = "^7.4.0"
 pytest-mock = "^3.12.0"
-mlflow = "^2.9.0" # For future MLOps lifecycle integration
-black = "^24.4.2" # Code formatter
-ruff = "^0.5.5"   # Linter
+mlflow = "^2.9.0"
+black = "^24.4.2"
+ruff = "^0.5.5"
 
 [tool.poetry.extras]
-# This allows for conditional installation, matching the app's logic
-# Usage examples:
-# poetry install --extras "torch"
-# poetry install --extras "torch bayesian"
-# pip install .[full]
 torch = ["torch"]
 bayesian = ["pgmpy"]
 full = ["torch", "pgmpy"]
-
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
-# Configure the linter for code quality checks
 line-length = 88
-select = ["E", "F", "W", "I"] # Standard checks + isort import sorting
+select = ["E", "F", "W", "I"]
 
 [tool.black]
-# Configure the auto-formatter for consistent code style
 line-length = 88
