@@ -1,11 +1,14 @@
+# conf/config.yaml
+
+# This is the simplest composition. It loads the files in order and merges them.
+# The nesting structure (like the 'data' key) will now be defined *inside*
+# the data.yaml and model.yaml files themselves.
 defaults:
-  - data: data
-  - model: model
+  - data
+  - model
   - _self_
 
+# App-level configurations
 app_name: "RedShield AI: Phoenix v4.1"
 forecast_horizons_hours: [0.5, 1, 3, 6, 12, 24, 72]
 mapbox_api_key: ${oc.env:MAPBOX_API_KEY, null}
-
-ml_models:
-  tcnn_name: "phoenix_tcnn"
