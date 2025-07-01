@@ -1,36 +1,43 @@
-params:
-  hawkes_process: {kappa: 0.5, beta: 1.0, trauma_weight: 1.5, violence_weight: 1.8}
-  sir_model: {beta: 0.3, gamma: 0.1}
-  laplacian_diffusion_factor: 0.1
-  response_time_penalty: 3.0
-  hospital_strain_multiplier: 2.0
-  ensemble_weights: {hawkes: 0.15, sir: 0.1, bayesian: 0.15, graph: 0.1, chaos: 0.1, info: 0.15, game: 0.25}
-  advanced_model_weights: {base_ensemble: 0.5, stgp: 0.15, hmm: 0.1, gnn: 0.15, game_theory: 0.1}
-  chaos_amplifier: 1.5
-  fallback_forecast_decay_rates: {"0.5": 0.95, "1": 0.9, "3": 0.8, "6": 0.7, "12": 0.6, "24": 0.4, "72": 0.2}
-  allocation_strategy: "nlp"
-  nlp_weight_risk: 1.0
-  nlp_weight_congestion: 0.2
+# conf/model.yaml
 
-bayesian_network:
-  structure: [["Holiday", "IncidentRate"], ["Weather", "IncidentRate"], ["MajorEvent", "IncidentRate"], ["AirQuality", "IncidentRate"], ["Heatwave", "IncidentRate"]]
-  cpds:
-    Holiday: {card: 2, values: [[0.97], [0.03]]}
-    Weather: {card: 2, values: [[0.8], [0.2]]}
-    MajorEvent: {card: 2, values: [[0.95], [0.05]]}
-    AirQuality: {card: 2, values: [[0.8], [0.2]]}
-    Heatwave: {card: 2, values: [[0.9], [0.1]]}
-    IncidentRate:
-      card: 3
-      values: [[0.6,0.5,0.4,0.3,0.5,0.4,0.3,0.2,0.6,0.5,0.4,0.3,0.5,0.4,0.3,0.2,0.6,0.5,0.4,0.3,0.5,0.4,0.3,0.2,0.6,0.5,0.4,0.3,0.5,0.4,0.3,0.2],
-               [0.3,0.3,0.4,0.4,0.3,0.4,0.4,0.5,0.3,0.3,0.4,0.4,0.3,0.4,0.4,0.5,0.3,0.3,0.4,0.4,0.3,0.4,0.4,0.5,0.3,0.3,0.4,0.4,0.3,0.4,0.4,0.5],
-               [0.1,0.2,0.2,0.3,0.2,0.2,0.3,0.3,0.1,0.2,0.2,0.3,0.2,0.2,0.3,0.3,0.1,0.2,0.2,0.3,0.2,0.2,0.3,0.3,0.1,0.2,0.2,0.3,0.2,0.2,0.3,0.3]]
-      evidence: ["Holiday", "Weather", "MajorEvent", "AirQuality", "Heatwave"]
-      evidence_card: [2, 2, 2, 2, 2]
+# All model-related configuration is nested under a single 'model' key.
+model:
+  params:
+    hawkes_process: {kappa: 0.5, beta: 1.0, trauma_weight: 1.5, violence_weight: 1.8}
+    sir_model: {beta: 0.3, gamma: 0.1}
+    laplacian_diffusion_factor: 0.1
+    response_time_penalty: 3.0
+    hospital_strain_multiplier: 2.0
+    ensemble_weights: {hawkes: 0.15, sir: 0.1, bayesian: 0.15, graph: 0.1, chaos: 0.1, info: 0.15, game: 0.25}
+    advanced_model_weights: {base_ensemble: 0.5, stgp: 0.15, hmm: 0.1, gnn: 0.15, game_theory: 0.1}
+    chaos_amplifier: 1.5
+    fallback_forecast_decay_rates: {"0.5": 0.95, "1": 0.9, "3": 0.8, "6": 0.7, "12": 0.6, "24": 0.4, "72": 0.2}
+    allocation_strategy: "nlp"
+    nlp_weight_risk: 1.0
+    nlp_weight_congestion: 0.2
 
-tcnn_params:
-  input_size: 8
-  output_size: 24
-  channels: [16, 32, 64]
-  kernel_size: 2
-  dropout: 0.2
+  bayesian_network:
+    structure: [["Holiday", "IncidentRate"], ["Weather", "IncidentRate"], ["MajorEvent", "IncidentRate"], ["AirQuality", "IncidentRate"], ["Heatwave", "IncidentRate"]]
+    cpds:
+      Holiday: {card: 2, values: [[0.97], [0.03]]}
+      Weather: {card: 2, values: [[0.8], [0.2]]}
+      MajorEvent: {card: 2, values: [[0.95], [0.05]]}
+      AirQuality: {card: 2, values: [[0.8], [0.2]]}
+      Heatwave: {card: 2, values: [[0.9], [0.1]]}
+      IncidentRate:
+        card: 3
+        values: [[0.6,0.5,0.4,0.3,0.5,0.4,0.3,0.2,0.6,0.5,0.4,0.3,0.5,0.4,0.3,0.2,0.6,0.5,0.4,0.3,0.5,0.4,0.3,0.2,0.6,0.5,0.4,0.3,0.5,0.4,0.3,0.2],
+                 [0.3,0.3,0.4,0.4,0.3,0.4,0.4,0.5,0.3,0.3,0.4,0.4,0.3,0.4,0.4,0.5,0.3,0.3,0.4,0.4,0.3,0.4,0.4,0.5,0.3,0.3,0.4,0.4,0.3,0.4,0.4,0.5],
+                 [0.1,0.2,0.2,0.3,0.2,0.2,0.3,0.3,0.1,0.2,0.2,0.3,0.2,0.2,0.3,0.3,0.1,0.2,0.2,0.3,0.2,0.2,0.3,0.3,0.1,0.2,0.2,0.3,0.2,0.2,0.3,0.3]]
+        evidence: ["Holiday", "Weather", "MajorEvent", "AirQuality", "Heatwave"]
+        evidence_card: [2, 2, 2, 2, 2]
+
+  tcnn_params:
+    input_size: 8
+    output_size: 24
+    channels: [16, 32, 64]
+    kernel_size: 2
+    dropout: 0.2
+  
+  ml_models:
+    tcnn_name: "phoenix_tcnn"
