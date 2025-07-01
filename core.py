@@ -301,48 +301,52 @@ class PredictiveAnalyticsEngine:
 
     @st.cache_data
     def generate_kpis(_self, historical_data: List[Dict], env_factors: EnvFactors, current_incidents: List[Dict]) -> pd.DataFrame:
-        kpi_cols = [
-            'Incident Probability', 'Expected Incident Volume', 'Risk Entropy', 'Anomaly Score', 
-            'Spatial Spillover Risk', 'Resource Adequacy Index', 'Chaos Sensitivity Score', 
-            'Bayesian Confidence Score', 'Information Value Index', 'Response Time Estimate', 
-            'Trauma Clustering Score', 'Disease Surge Score', 'Trauma-Disease Correlation', 
-            'Violence Clustering Score', 'Accident Clustering Score', 'Medical Surge Score', 
-            'Ensemble Risk Score', 'STGP_Risk', 'HMM_State_Risk', 'GNN_Structural_Risk', 
-            'Game_Theory_Tension', 'Integrated_Risk_Score'
-        ]
-        kpi_df = pd.DataFrame(0, index=_self.dm.zones, columns=kpi_cols, dtype=float)
-
+        """
+        Master method to generate all Key Performance Indicators (KPIs).
+        This optimized version unpacks parameters and structures calculations for clarity.
+        """
+        # --- I. Initial Setup & Data Preparation ---
+        kpi_df = pd.DataFrame(index=_self.dm.zones)
         all_incidents = [inc for h in historical_data for inc in h.get('incidents', []) if isinstance(h, dict)] + current_incidents
-        if not all_incidents: return kpi_df.reset_index().rename(columns={'index': 'Zone'})
+        if not all_incidents:
+            # If no incidents, return an empty DataFrame with the correct structure.
+            kpi_df.index.name = 'Zone'
+            return kpi_df.reset_index()
 
         incident_df = pd.DataFrame(all_incidents).drop_duplicates(subset=['id'], keep='first')
         incident_gdf = gpd.GeoDataFrame(incident_df, geometry=[Point(loc['lon'], loc['lat']) for loc in incident_df['location']], crs="EPSG:4326")
-        
-        zones_for_join = _self.dm.zones_gdf.reset_index()
-        incidents_with_zones = gpd.sjoin(incident_gdf, zones_for_join, how="inner", predicate="within").rename(columns={'name': 'Zone'})
+        incidents_with_zones = gpd.sjoin(incident_gdf, _self.dm.zones_gdf.reset_index(), how="inner", predicate="within").rename(columns={'name': 'Zone'})
 
-        if incidents_with_zones.empty: return kpi_df.reset_index().rename(columns={'index': 'Zone'})
+        if incidents_with_zones.empty:
+            kpi_df.index.name = 'Zone'
+            return kpi_df.reset_index()
 
-        incident_counts = incidents_with_zones['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
-        violence_counts = incidents_with_zones[incidents_with_zones['type'] == 'Trauma-Violence']['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
-        accident_counts = incidents_with_zones[incidents_with_zones['type'] == 'Trauma-Accident']['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
-        medical_counts = incidents_with_zones[incidents_with_zones['type'].isin(['Medical-Chronic', 'Medical-Acute'])]['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
+        # --- II. Unpack Parameters & Calculate Contextual Modifiers ---
+        # Unpack model parameters for cleaner formulas below.
+        params = _self.model_params
+        hawkes_params = params.get('hawkes_process', {})
+        sir_params = params.get('sir_model', {})
+        adv_weights = params.get('advanced_model_weights', {})
         
+        # Calculate environmental and contextual modifiers.
         day_time_multiplier = {'Entre Semana': 1.0, 'Viernes': 1.2, 'Fin de Semana': 1.3}.get(env_factors.day_type, 1.0) * {'Hora Pico Mañana': 1.1, 'Mediodía': 0.9, 'Hora Pico Tarde': 1.2, 'Noche': 1.4}.get(env_factors.time_of_day, 1.0)
         event_multiplier = {'Evento Deportivo': 1.6, 'Concierto/Festival': 1.8, 'Protesta Pública': 2.0}.get(env_factors.public_event_type, 1.0) if env_factors.public_event_type != 'Ninguno' else 1.0
         violence_event_mod = {'Evento Deportivo': 1.8, 'Protesta Pública': 2.5}.get(env_factors.public_event_type, 1.0)
         medical_event_mod = {'Concierto/Festival': 2.0}.get(env_factors.public_event_type, 1.0)
         effective_traffic = env_factors.traffic_level * (1.0 if env_factors.school_in_session else 0.8)
         police_activity_mod = {'Bajo': 1.1, 'Normal': 1.0, 'Alto': 0.85}.get(env_factors.police_activity, 1.0)
-        system_strain_penalty = 1.0 + (env_factors.hospital_divert_status * 2.0)
+        system_strain_penalty = 1.0 + (env_factors.hospital_divert_status * params.get('hospital_strain_multiplier', 2.0))
         
+        # --- III. Foundational KPI Calculations ---
+        incident_counts = incidents_with_zones['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
         if _self.bn_model:
             try:
                 inference = VariableElimination(_self.bn_model)
                 evidence = {'Holiday':1 if env_factors.is_holiday else 0, 'Weather':1 if env_factors.weather!='Despejado' else 0, 'MajorEvent':1 if env_factors.major_event else 0, 'AirQuality':1 if env_factors.air_quality_index>100 else 0, 'Heatwave':1 if env_factors.heatwave_alert else 0}
                 result = inference.query(variables=['IncidentRate'], evidence=evidence, show_progress=False)
                 rate_probs = result.values
-                baseline_rate = np.sum(rate_probs * np.array([1, 5, 10])); kpi_df['Bayesian Confidence Score'] = 1 - (np.std(rate_probs) / (np.mean(rate_probs) + 1e-9))
+                baseline_rate = np.sum(rate_probs * np.array([1, 5, 10]))
+                kpi_df['Bayesian Confidence Score'] = 1 - (np.std(rate_probs) / (np.mean(rate_probs) + 1e-9))
             except Exception as e: logger.warning(f"BNI failed: {e}"); baseline_rate, kpi_df['Bayesian Confidence Score'] = 5.0, 0.5
         else: baseline_rate, kpi_df['Bayesian Confidence Score'] = 5.0, 0.5
         
@@ -350,49 +354,52 @@ class PredictiveAnalyticsEngine:
         prior_dist = pd.Series(_self.data_config.get('distributions', {}).get('zone', {})).reindex(_self.dm.zones, fill_value=1e-9)
         current_dist = incident_counts / (incident_counts.sum() + 1e-9)
         kpi_df['Anomaly Score'] = np.nansum(current_dist * np.log(current_dist / (prior_dist + 1e-9)))
-        kpi_df['Risk Entropy'] = -np.nansum(current_dist * np.log2(current_dist.replace(0,1e-9)))
+        kpi_df['Risk Entropy'] = -np.nansum(current_dist * np.log2(current_dist.replace(0, 1e-9)))
         kpi_df['Chaos Sensitivity Score'] = _self._calculate_lyapunov_exponent(historical_data)
         base_probs = (baseline_rate * prior_dist * _self.dm.zones_gdf['crime_rate_modifier']).clip(0, 1)
-        kpi_df['Spatial Spillover Risk'] = _self.model_params.get('laplacian_diffusion_factor', 0.1) * (_self.dm.laplacian_matrix @ base_probs.values)
-        hawkes, sir = _self.model_params['hawkes_process'], _self.model_params['sir_model']
-        kpi_df['Violence Clustering Score'] = (violence_counts * hawkes['kappa'] * hawkes['violence_weight'] * violence_event_mod * police_activity_mod).clip(0, 1)
-        kpi_df['Accident Clustering Score'] = (accident_counts * hawkes['kappa'] * hawkes['trauma_weight'] * effective_traffic).clip(0, 1)
-        kpi_df['Medical Surge Score'] = (_self.dm.zones_gdf['population'].apply(lambda s: sir['beta']*medical_counts.get(s,0)/(s+1e-9)-sir['gamma'])*medical_event_mod).clip(0,1)
+        kpi_df['Incident Probability'] = base_probs
+        kpi_df['Expected Incident Volume'] = (base_probs * params.get('incident_volume_multiplier', 10.0) * effective_traffic).round()
+        kpi_df['Spatial Spillover Risk'] = params.get('laplacian_diffusion_factor', 0.1) * (_self.dm.laplacian_matrix @ base_probs.values)
+
+        # Clustering and Surge KPIs
+        violence_counts = incidents_with_zones[incidents_with_zones['type'] == 'Trauma-Violence']['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
+        accident_counts = incidents_with_zones[incidents_with_zones['type'] == 'Trauma-Accident']['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
+        medical_counts = incidents_with_zones[incidents_with_zones['type'].isin(['Medical-Chronic', 'Medical-Acute'])]['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
+
+        kpi_df['Violence Clustering Score'] = (violence_counts * hawkes_params.get('kappa', 0.5) * hawkes_params.get('violence_weight', 1.8) * violence_event_mod * police_activity_mod).clip(0, 1)
+        kpi_df['Accident Clustering Score'] = (accident_counts * hawkes_params.get('kappa', 0.5) * hawkes_params.get('trauma_weight', 1.5) * effective_traffic).clip(0, 1)
+        kpi_df['Medical Surge Score'] = (_self.dm.zones_gdf['population'].apply(lambda s: sir_params.get('beta', 0.3) * medical_counts.get(s, 0) / (s + 1e-9) - sir_params.get('gamma', 0.1)) * medical_event_mod).clip(0, 1)
         kpi_df['Trauma Clustering Score'] = (kpi_df['Violence Clustering Score'] + kpi_df['Accident Clustering Score']) / 2
         kpi_df['Disease Surge Score'] = kpi_df['Medical Surge Score']
-        kpi_df['Incident Probability'] = base_probs; kpi_df['Expected Incident Volume'] = (base_probs * 10 * effective_traffic).round()
-        available_units = sum(1 for a in _self.dm.ambulances.values() if a['status']=='Disponible')
+
+        # System-level KPIs
+        available_units = sum(1 for a in _self.dm.ambulances.values() if a['status'] == 'Disponible')
         kpi_df['Resource Adequacy Index'] = (available_units / (kpi_df['Expected Incident Volume'].sum() * system_strain_penalty + 1e-9)).clip(0, 1)
-        kpi_df['Response Time Estimate'] = (10.0 * system_strain_penalty) * (1 + _self.model_params.get('response_time_penalty', 3.0) * (1-kpi_df['Resource Adequacy Index']))
+        kpi_df['Response Time Estimate'] = (10.0 * system_strain_penalty) * (1 + params.get('response_time_penalty', 3.0) * (1 - kpi_df['Resource Adequacy Index']))
         
+        # --- IV. Advanced and Synthesized KPIs ---
         kpi_df['Ensemble Risk Score'] = _self._calculate_ensemble_risk_score(kpi_df, historical_data)
         kpi_df['Information Value Index'] = kpi_df['Ensemble Risk Score'].std()
-        
-        # --- THIS IS THE FIX ---
-        # Ensure kpi_df has 'Zone' as a column before passing to advanced models
+
+        # Prepare a DataFrame with 'Zone' as a column for proxy model functions
         kpi_df_with_zone_col = kpi_df.reset_index().rename(columns={'index': 'Zone'})
         
-        stgp_risk = AdvancedAnalyticsLayer._calculate_stgp_risk(incidents_with_zones, _self.dm.zones_gdf)
-        hmm_risk = AdvancedAnalyticsLayer._calculate_hmm_risk(kpi_df_with_zone_col)
-        gnn_risk = _self.gnn_structural_risk
-        game_theory_tension = AdvancedAnalyticsLayer._calculate_game_theory_tension(kpi_df_with_zone_col)
-        
-        # Merge the results back into the main kpi_df using the index
-        kpi_df['STGP_Risk'] = stgp_risk
-        kpi_df['HMM_State_Risk'] = hmm_risk.values
-        kpi_df['GNN_Structural_Risk'] = gnn_risk
-        kpi_df['Game_Theory_Tension'] = game_theory_tension.values
-        # --- END OF FIX ---
+        # Calculate advanced KPIs using the prepared DataFrame
+        kpi_df['STGP_Risk'] = AdvancedAnalyticsLayer._calculate_stgp_risk(incidents_with_zones, _self.dm.zones_gdf)
+        kpi_df['HMM_State_Risk'] = AdvancedAnalyticsLayer._calculate_hmm_risk(kpi_df_with_zone_col).values
+        kpi_df['GNN_Structural_Risk'] = _self.gnn_structural_risk
+        kpi_df['Game_Theory_Tension'] = AdvancedAnalyticsLayer._calculate_game_theory_tension(kpi_df_with_zone_col).values
 
-        adv_weights = _self.model_params.get('advanced_model_weights', {})
+        # Final weighted synthesis
         kpi_df['Integrated_Risk_Score'] = (
-            adv_weights.get('base_ensemble', 0.6) * kpi_df['Ensemble Risk Score'] +
-            adv_weights.get('stgp', 0.1) * kpi_df['STGP_Risk'] +
+            adv_weights.get('base_ensemble', 0.5) * kpi_df['Ensemble Risk Score'] +
+            adv_weights.get('stgp', 0.15) * kpi_df['STGP_Risk'] +
             adv_weights.get('hmm', 0.1) * kpi_df['HMM_State_Risk'] +
-            adv_weights.get('gnn', 0.1) * kpi_df['GNN_Structural_Risk'] +
+            adv_weights.get('gnn', 0.15) * kpi_df['GNN_Structural_Risk'] +
             adv_weights.get('game_theory', 0.1) * kpi_df['Game_Theory_Tension']
         ).clip(0, 1)
-
+        
+        # Fill any remaining NaNs and return with 'Zone' as a column
         return kpi_df.fillna(0).reset_index().rename(columns={'index': 'Zone'})
 
     def generate_kpis_with_sparklines(self, historical_data: List[Dict], env_factors: EnvFactors, current_incidents: List[Dict]) -> Tuple[pd.DataFrame, Dict[str, Dict]]:
@@ -467,13 +474,15 @@ class PredictiveAnalyticsEngine:
         return self.forecast_df
         
     def _post_process_allocations(self, allocations: Dict[str, Any], available_units: int, sort_key: pd.Series) -> Dict[str, int]:
+        """Rounds allocations and robustly adjusts to match total available units."""
         final = {z: int(round(v)) for z, v in allocations.items()}
         diff = available_units - sum(final.values())
         if diff != 0:
             order = sort_key.sort_values(ascending=False).index.tolist()
             if diff > 0:
                 for i in range(diff): final[order[i % len(order)]] += 1
-            else:
+            else: # diff < 0
+                # Iterate backwards from lowest-priority zones to remove units
                 for i in range(abs(diff)):
                     zone_to_decrement = order[-(i % len(order)) - 1]
                     if final[zone_to_decrement] > 0:
