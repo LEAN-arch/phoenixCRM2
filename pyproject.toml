@@ -22,6 +22,9 @@ streamlit-folium = "~0.22.0"
 matplotlib = "~3.9.2"
 reportlab = "~4.2.2"
 requests = "~2.32.3"
+hydra-core = "^1.3.2"  # <-- THIS LINE WAS MISSING. IT IS THE FIX.
+
+# Optional ML dependencies
 torch = { version = "~2.4.1", optional = true }
 pgmpy = { version = "~0.1.26", optional = true }
 
