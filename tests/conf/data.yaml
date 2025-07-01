@@ -1,0 +1,20 @@
+zones:
+  Centro: {polygon: [[32.52, -117.03], [32.54, -117.03], [32.54, -117.05], [32.52, -117.05]], population: 50000, crime_rate_modifier: 1.2}
+  Otay: {polygon: [[32.53, -116.95], [32.54, -116.95], [32.54, -116.98], [32.53, -116.98]], population: 30000, crime_rate_modifier: 0.8}
+  Playas: {polygon: [[32.51, -117.11], [32.53, -117.11], [32.53, -117.13], [32.51, -117.13]], population: 20000, crime_rate_modifier: 1.0}
+
+ambulances:
+  A01: {status: Disponible, home_base: Centro, location: [32.53, -117.04]}
+  A02: {status: Disponible, home_base: Otay, location: [32.535, -116.965]}
+  A03: {status: En Misión, home_base: Playas, location: [32.52, -117.12]}
+
+distributions:
+  zone: {Centro: 0.5, Otay: 0.3, Playas: 0.2}
+  incident_type: {Trauma-Violence: 0.2, Trauma-Accident: 0.2, Medical-Chronic: 0.4, Medical-Acute: 0.2}
+
+road_network:
+  edges: [["Centro", "Otay", 5], ["Centro", "Playas", 10], ["Otay", "Playas", 8]]
+
+real_time_api:
+  endpoint: "sample_api_response.json"
+  api_key: ${oc.env:PHOENIX_API_KEY, null} # Securely loads from an environment variable, falling back to null
