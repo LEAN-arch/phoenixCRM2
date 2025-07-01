@@ -252,12 +252,9 @@ class PredictiveAnalyticsEngine:
         self.dm = dm
         self.config = config
         
-        # --- THIS IS THE FIX ---
-        # Access the nested 'model' and 'data' dictionaries from the config
         self.model_config = config.get('model', {})
         self.data_config = config.get('data', {})
         self.model_params = self.model_config.get('params', {})
-        # --- END OF FIX ---
         
         self.forecast_df = pd.DataFrame()
         
@@ -281,7 +278,6 @@ class PredictiveAnalyticsEngine:
             return model
         except Exception as e:
             logger.error(f"Failed to load TCNN model '{model_name}' from MLflow. TCNN disabled. Error: {e}", exc_info=True)
-            # CORRECTED: Use the nested config for fallback
             tcnn_params = self.model_config.get('tcnn_params', {})
             return TCNN(**tcnn_params)
 
@@ -289,7 +285,6 @@ class PredictiveAnalyticsEngine:
     def _build_bayesian_network(_self) -> Optional[BayesianNetwork]:
         if not PGMPY_AVAILABLE: return None
         try:
-            # CORRECTED: Use the nested model config
             bn_config = _self.model_config.get('bayesian_network', {})
             if not bn_config:
                 logger.warning("Bayesian network configuration is missing. Disabling.")
@@ -352,7 +347,6 @@ class PredictiveAnalyticsEngine:
         else: baseline_rate, kpi_df['Bayesian Confidence Score'] = 5.0, 0.5
         
         baseline_rate *= day_time_multiplier * event_multiplier
-        # CORRECTED: Use the scoped data_config
         prior_dist = pd.Series(_self.data_config.get('distributions', {}).get('zone', {})).reindex(_self.dm.zones, fill_value=1e-9)
         current_dist = incident_counts / (incident_counts.sum() + 1e-9)
         kpi_df['Anomaly Score'] = np.nansum(current_dist * np.log(current_dist / (prior_dist + 1e-9)))
@@ -373,11 +367,23 @@ class PredictiveAnalyticsEngine:
         
         kpi_df['Ensemble Risk Score'] = _self._calculate_ensemble_risk_score(kpi_df, historical_data)
         kpi_df['Information Value Index'] = kpi_df['Ensemble Risk Score'].std()
-        kpi_df['STGP_Risk'] = AdvancedAnalyticsLayer._calculate_stgp_risk(incidents_with_zones, _self.dm.zones_gdf)
-        kpi_df['HMM_State_Risk'] = AdvancedAnalyticsLayer._calculate_hmm_risk(kpi_df.reset_index())
-        kpi_df['GNN_Structural_Risk'] = _self.gnn_structural_risk
-        kpi_df['Game_Theory_Tension'] = AdvancedAnalyticsLayer._calculate_game_theory_tension(kpi_df.reset_index())
         
+        # --- THIS IS THE FIX ---
+        # Ensure kpi_df has 'Zone' as a column before passing to advanced models
+        kpi_df_with_zone_col = kpi_df.reset_index().rename(columns={'index': 'Zone'})
+        
+        stgp_risk = AdvancedAnalyticsLayer._calculate_stgp_risk(incidents_with_zones, _self.dm.zones_gdf)
+        hmm_risk = AdvancedAnalyticsLayer._calculate_hmm_risk(kpi_df_with_zone_col)
+        gnn_risk = _self.gnn_structural_risk
+        game_theory_tension = AdvancedAnalyticsLayer._calculate_game_theory_tension(kpi_df_with_zone_col)
+        
+        # Merge the results back into the main kpi_df using the index
+        kpi_df['STGP_Risk'] = stgp_risk
+        kpi_df['HMM_State_Risk'] = hmm_risk.values
+        kpi_df['GNN_Structural_Risk'] = gnn_risk
+        kpi_df['Game_Theory_Tension'] = game_theory_tension.values
+        # --- END OF FIX ---
+
         adv_weights = _self.model_params.get('advanced_model_weights', {})
         kpi_df['Integrated_Risk_Score'] = (
             adv_weights.get('base_ensemble', 0.6) * kpi_df['Ensemble Risk Score'] +
@@ -442,7 +448,6 @@ class PredictiveAnalyticsEngine:
     def generate_forecast(self, kpi_df: pd.DataFrame) -> pd.DataFrame:
         if kpi_df.empty: return pd.DataFrame()
         forecast_data = []
-        # CORRECTED: Use the top-level config for app parameters
         for _, row in kpi_df.iterrows():
             for horizon in self.config.get('forecast_horizons_hours', []):
                 decay = self.model_params.get('fallback_forecast_decay_rates', {}).get(str(horizon), 0.5)
