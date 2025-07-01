@@ -17,4 +17,4 @@ road_network:
 
 real_time_api:
   endpoint: "sample_api_response.json"
-  api_key: ${oc.env:PHOENIX_API_KEY, null} # Securely loads from an environment variable, falling back to null
+  api_key: ${oc.env:PHOENIX_API_KEY, null}
