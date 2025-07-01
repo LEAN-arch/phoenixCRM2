@@ -212,10 +212,12 @@ class DataManager:
     def _generate_synthetic_incidents(self, env_factors: EnvFactors, override_count: Optional[int] = None) -> List[Dict[str, Any]]:
         if override_count is not None:
             num_incidents = override_count
+            logger.info(f"Generating {num_incidents} synthetic incidents based on user override.")
         else:
             base_intensity = 5.0
             intensity = base_intensity * (1.5 if env_factors.is_holiday else 1.0) * (1.2 if env_factors.weather in ['Lluvia', 'Niebla'] else 1.0) * (2.0 if env_factors.major_event else 1.0)
             num_incidents = int(np.random.poisson(intensity))
+            logger.info(f"Generating {num_incidents} synthetic incidents based on environmental factors.")
         
         if num_incidents == 0: return []
         
@@ -223,7 +225,9 @@ class DataManager:
         bounds = city_boundary.bounds
         incidents = []
         incident_types = list(self.data_config.get('distributions', {}).get('incident_type', {}).keys())
-        if not incident_types: return []
+        if not incident_types:
+            logger.warning("No incident types in config. Cannot generate synthetic incidents.")
+            return []
         
         num_to_generate = int(num_incidents * 1.5)
         lons = np.random.uniform(bounds[0], bounds[2], num_to_generate)
@@ -305,30 +309,43 @@ class PredictiveAnalyticsEngine:
         Master method to generate all Key Performance Indicators (KPIs).
         This optimized version unpacks parameters and structures calculations for clarity.
         """
+        kpi_cols = [
+            'Incident Probability', 'Expected Incident Volume', 'Risk Entropy', 'Anomaly Score', 'Spatial Spillover Risk',
+            'Resource Adequacy Index', 'Chaos Sensitivity Score', 'Bayesian Confidence Score', 'Information Value Index',
+            'Response Time Estimate', 'Trauma Clustering Score', 'Disease Surge Score', 'Violence Clustering Score',
+            'Accident Clustering Score', 'Medical Surge Score', 'Ensemble Risk Score', 'STGP_Risk', 'HMM_State_Risk',
+            'GNN_Structural_Risk', 'Game_Theory_Tension', 'Integrated_Risk_Score'
+        ]
+        
         # --- I. Initial Setup & Data Preparation ---
-        kpi_df = pd.DataFrame(index=_self.dm.zones)
         all_incidents = [inc for h in historical_data for inc in h.get('incidents', []) if isinstance(h, dict)] + current_incidents
+        
+        # --- THIS IS THE FIX ---
+        # If there are no incidents, return a correctly structured DataFrame with all columns and zero values.
         if not all_incidents:
-            # If no incidents, return an empty DataFrame with the correct structure.
+            logger.info("No incidents found (real or synthetic). Returning a zero-value KPI DataFrame.")
+            kpi_df = pd.DataFrame(0, index=_self.dm.zones, columns=kpi_cols)
             kpi_df.index.name = 'Zone'
             return kpi_df.reset_index()
+        # --- END OF FIX ---
 
+        kpi_df = pd.DataFrame(index=_self.dm.zones)
         incident_df = pd.DataFrame(all_incidents).drop_duplicates(subset=['id'], keep='first')
         incident_gdf = gpd.GeoDataFrame(incident_df, geometry=[Point(loc['lon'], loc['lat']) for loc in incident_df['location']], crs="EPSG:4326")
         incidents_with_zones = gpd.sjoin(incident_gdf, _self.dm.zones_gdf.reset_index(), how="inner", predicate="within").rename(columns={'name': 'Zone'})
 
         if incidents_with_zones.empty:
+            logger.info("No incidents fall within defined zones. Returning a zero-value KPI DataFrame.")
+            kpi_df = pd.DataFrame(0, index=_self.dm.zones, columns=kpi_cols)
             kpi_df.index.name = 'Zone'
             return kpi_df.reset_index()
 
         # --- II. Unpack Parameters & Calculate Contextual Modifiers ---
-        # Unpack model parameters for cleaner formulas below.
         params = _self.model_params
         hawkes_params = params.get('hawkes_process', {})
         sir_params = params.get('sir_model', {})
         adv_weights = params.get('advanced_model_weights', {})
         
-        # Calculate environmental and contextual modifiers.
         day_time_multiplier = {'Entre Semana': 1.0, 'Viernes': 1.2, 'Fin de Semana': 1.3}.get(env_factors.day_type, 1.0) * {'Hora Pico Mañana': 1.1, 'Mediodía': 0.9, 'Hora Pico Tarde': 1.2, 'Noche': 1.4}.get(env_factors.time_of_day, 1.0)
         event_multiplier = {'Evento Deportivo': 1.6, 'Concierto/Festival': 1.8, 'Protesta Pública': 2.0}.get(env_factors.public_event_type, 1.0) if env_factors.public_event_type != 'Ninguno' else 1.0
         violence_event_mod = {'Evento Deportivo': 1.8, 'Protesta Pública': 2.5}.get(env_factors.public_event_type, 1.0)
@@ -361,7 +378,6 @@ class PredictiveAnalyticsEngine:
         kpi_df['Expected Incident Volume'] = (base_probs * params.get('incident_volume_multiplier', 10.0) * effective_traffic).round()
         kpi_df['Spatial Spillover Risk'] = params.get('laplacian_diffusion_factor', 0.1) * (_self.dm.laplacian_matrix @ base_probs.values)
 
-        # Clustering and Surge KPIs
         violence_counts = incidents_with_zones[incidents_with_zones['type'] == 'Trauma-Violence']['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
         accident_counts = incidents_with_zones[incidents_with_zones['type'] == 'Trauma-Accident']['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
         medical_counts = incidents_with_zones[incidents_with_zones['type'].isin(['Medical-Chronic', 'Medical-Acute'])]['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
@@ -372,7 +388,6 @@ class PredictiveAnalyticsEngine:
         kpi_df['Trauma Clustering Score'] = (kpi_df['Violence Clustering Score'] + kpi_df['Accident Clustering Score']) / 2
         kpi_df['Disease Surge Score'] = kpi_df['Medical Surge Score']
 
-        # System-level KPIs
         available_units = sum(1 for a in _self.dm.ambulances.values() if a['status'] == 'Disponible')
         kpi_df['Resource Adequacy Index'] = (available_units / (kpi_df['Expected Incident Volume'].sum() * system_strain_penalty + 1e-9)).clip(0, 1)
         kpi_df['Response Time Estimate'] = (10.0 * system_strain_penalty) * (1 + params.get('response_time_penalty', 3.0) * (1 - kpi_df['Resource Adequacy Index']))
@@ -380,17 +395,14 @@ class PredictiveAnalyticsEngine:
         # --- IV. Advanced and Synthesized KPIs ---
         kpi_df['Ensemble Risk Score'] = _self._calculate_ensemble_risk_score(kpi_df, historical_data)
         kpi_df['Information Value Index'] = kpi_df['Ensemble Risk Score'].std()
-
-        # Prepare a DataFrame with 'Zone' as a column for proxy model functions
+        
         kpi_df_with_zone_col = kpi_df.reset_index().rename(columns={'index': 'Zone'})
         
-        # Calculate advanced KPIs using the prepared DataFrame
         kpi_df['STGP_Risk'] = AdvancedAnalyticsLayer._calculate_stgp_risk(incidents_with_zones, _self.dm.zones_gdf)
         kpi_df['HMM_State_Risk'] = AdvancedAnalyticsLayer._calculate_hmm_risk(kpi_df_with_zone_col).values
         kpi_df['GNN_Structural_Risk'] = _self.gnn_structural_risk
         kpi_df['Game_Theory_Tension'] = AdvancedAnalyticsLayer._calculate_game_theory_tension(kpi_df_with_zone_col).values
 
-        # Final weighted synthesis
         kpi_df['Integrated_Risk_Score'] = (
             adv_weights.get('base_ensemble', 0.5) * kpi_df['Ensemble Risk Score'] +
             adv_weights.get('stgp', 0.15) * kpi_df['STGP_Risk'] +
@@ -399,7 +411,6 @@ class PredictiveAnalyticsEngine:
             adv_weights.get('game_theory', 0.1) * kpi_df['Game_Theory_Tension']
         ).clip(0, 1)
         
-        # Fill any remaining NaNs and return with 'Zone' as a column
         return kpi_df.fillna(0).reset_index().rename(columns={'index': 'Zone'})
 
     def generate_kpis_with_sparklines(self, historical_data: List[Dict], env_factors: EnvFactors, current_incidents: List[Dict]) -> Tuple[pd.DataFrame, Dict[str, Dict]]:
@@ -482,7 +493,6 @@ class PredictiveAnalyticsEngine:
             if diff > 0:
                 for i in range(diff): final[order[i % len(order)]] += 1
             else: # diff < 0
-                # Iterate backwards from lowest-priority zones to remove units
                 for i in range(abs(diff)):
                     zone_to_decrement = order[-(i % len(order)) - 1]
                     if final[zone_to_decrement] > 0:
@@ -527,7 +537,7 @@ class PredictiveAnalyticsEngine:
         return self._allocate_proportional(kpi_df, available_units)
 
     def generate_allocation_recommendations(self, kpi_df: pd.DataFrame) -> Dict[str, int]:
-        if kpi_df.empty or kpi_df['Integrated_Risk_Score'].sum() == 0:
+        if kpi_df.empty or 'Integrated_Risk_Score' not in kpi_df.columns or kpi_df['Integrated_Risk_Score'].sum() == 0:
             return {zone: 0 for zone in self.dm.zones}
         units = sum(1 for a in self.dm.ambulances.values() if a['status'] == 'Disponible')
         if units == 0: return {zone: 0 for zone in self.dm.zones}
