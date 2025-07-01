@@ -5,14 +5,6 @@ Core business logic for the RedShield AI Phoenix application.
 This module contains the primary classes responsible for data management,
 predictive analytics, and resource allocation optimization. It is designed to be
 robust, extensible, and performant, with clear separation of concerns.
-
-- DataManager: Handles all data ingestion, cleaning, and preparation from various
-  sources (config files, real-time APIs).
-- PredictiveAnalyticsEngine: The heart of the system, orchestrating a suite of
-  statistical, machine learning, and heuristic models to generate comprehensive
-  risk KPIs for each operational zone.
-- EnvFactors: A structured data class for environmental and contextual variables.
-- TCNN: A deep learning model for advanced time-series forecasting (optional).
 """
 
 import io
@@ -72,10 +64,7 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 
 @dataclass(frozen=True)
 class EnvFactors:
-    """
-    Immutable dataclass to hold all environmental and contextual factors.
-    Using frozen=True makes instances hashable, suitable for caching.
-    """
+    """Immutable dataclass to hold all environmental and contextual factors."""
     is_holiday: bool
     weather: str
     traffic_level: float
@@ -94,10 +83,7 @@ class EnvFactors:
 # --- L2: DEEP LEARNING MODEL (CONDITIONAL) ---
 
 class TCNN(nn.Module if TORCH_AVAILABLE else object):
-    """
-    Temporal Convolutional Neural Network for advanced forecasting.
-    This model is conditionally available based on PyTorch installation.
-    """
+    """Temporal Convolutional Neural Network for advanced forecasting."""
     def __init__(self, input_size: int, output_size: int, channels: List[int], kernel_size: int, dropout: float):
         if not TORCH_AVAILABLE:
             self.model = None
@@ -124,7 +110,6 @@ class TCNN(nn.Module if TORCH_AVAILABLE else object):
     def forward(self, x: "torch.Tensor") -> "torch.Tensor":
         """Forward pass for the TCNN model."""
         if not TORCH_AVAILABLE or self.model is None:
-            # Fallback to zeros if torch is not available or model failed to load
             return torch.zeros(x.shape[0], self.output_size)
         return self.model(x)
 
@@ -144,20 +129,15 @@ class DataManager:
         self.laplacian_matrix = self._compute_laplacian_matrix()
 
     def _build_road_graph(self) -> nx.Graph:
-        """Constructs the road network graph from configuration."""
         G = nx.Graph()
         G.add_nodes_from(self.zones)
         edges = self.data_config.get('road_network', {}).get('edges', [])
-        valid_edges = [
-            (u, v, float(w)) for u, v, w in edges
-            if u in G.nodes and v in G.nodes and isinstance(w, (int, float)) and w > 0
-        ]
+        valid_edges = [(u, v, float(w)) for u, v, w in edges if u in G.nodes and v in G.nodes and isinstance(w, (int, float)) and w > 0]
         G.add_weighted_edges_from(valid_edges)
         logger.info(f"Road graph built with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
         return G
 
     def _build_zones_gdf(self) -> gpd.GeoDataFrame:
-        """Constructs the GeoDataFrame for operational zones."""
         zone_data = []
         for name, data in self.data_config['zones'].items():
             try:
@@ -169,32 +149,23 @@ class DataManager:
                 zone_data.append({'name': name, 'geometry': poly, **data})
             except Exception as e:
                 logger.error(f"Could not load polygon for zone '{name}': {e}. Skipping.", exc_info=True)
-
         if not zone_data:
             raise RuntimeError("Fatal: No valid zones could be loaded from configuration.")
-
         gdf = gpd.GeoDataFrame(zone_data, crs="EPSG:4326").set_index('name')
         logger.info(f"Built GeoDataFrame with {len(gdf)} zones.")
         return gdf
 
     def _initialize_ambulances(self) -> Dict[str, Any]:
-        """Initializes ambulance data from configuration with robust error handling."""
         ambulances = {}
         for amb_id, data in self.data_config['ambulances'].items():
             try:
-                ambulances[amb_id] = {
-                    'id': amb_id,
-                    'status': data.get('status', 'Disponible'),
-                    'home_base': data.get('home_base'),
-                    'location': Point(float(data['location'][1]), float(data['location'][0]))
-                }
+                ambulances[amb_id] = {'id': amb_id, 'status': data.get('status', 'Disponible'), 'home_base': data.get('home_base'), 'location': Point(float(data['location'][1]), float(data['location'][0]))}
             except (ValueError, TypeError, KeyError, IndexError) as e:
                 logger.error(f"Could not initialize ambulance '{amb_id}': {e}. Skipping.", exc_info=True)
         logger.info(f"Initialized {len(ambulances)} ambulances.")
         return ambulances
 
     def _compute_laplacian_matrix(self) -> np.ndarray:
-        """Computes the normalized graph Laplacian matrix with a robust fallback."""
         try:
             sorted_zones = sorted(self.road_graph.nodes())
             laplacian = nx.normalized_laplacian_matrix(self.road_graph, nodelist=sorted_zones).toarray()
@@ -205,10 +176,6 @@ class DataManager:
             return np.eye(len(self.zones))
 
     def get_current_incidents(self, env_factors: EnvFactors) -> List[Dict[str, Any]]:
-        """
-        Fetches real-time incidents from an API or local file.
-        Falls back to generating synthetic data on failure.
-        """
         api_config = self.data_config.get('real_time_api', {})
         endpoint = api_config.get('endpoint', '')
         try:
@@ -220,7 +187,6 @@ class DataManager:
             else:
                 with open(endpoint, 'r', encoding='utf-8') as f:
                     incidents = json.load(f).get('incidents', [])
-
             valid_incidents = self._validate_incidents(incidents)
             return valid_incidents if valid_incidents else self._generate_synthetic_incidents(env_factors)
         except (requests.exceptions.RequestException, FileNotFoundError, json.JSONDecodeError) as e:
@@ -231,7 +197,6 @@ class DataManager:
             return self._generate_synthetic_incidents(env_factors)
 
     def _validate_incidents(self, incidents: List[Dict]) -> List[Dict]:
-        """Validates the structure and data types of raw incident data."""
         valid_incidents = []
         for inc in incidents:
             loc = inc.get('location')
@@ -245,46 +210,29 @@ class DataManager:
         return valid_incidents
 
     def _generate_synthetic_incidents(self, env_factors: EnvFactors, override_count: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Generates realistic synthetic incidents based on environmental factors."""
         if override_count is not None:
             num_incidents = override_count
-            logger.info(f"Generating {num_incidents} synthetic incidents based on user override.")
         else:
             base_intensity = 5.0
-            intensity = base_intensity * \
-                (1.5 if env_factors.is_holiday else 1.0) * \
-                (1.2 if env_factors.weather in ['Rain', 'Fog'] else 1.0) * \
-                (2.0 if env_factors.major_event else 1.0)
+            intensity = base_intensity * (1.5 if env_factors.is_holiday else 1.0) * (1.2 if env_factors.weather in ['Lluvia', 'Niebla'] else 1.0) * (2.0 if env_factors.major_event else 1.0)
             num_incidents = int(np.random.poisson(intensity))
-            logger.info(f"Generating {num_incidents} synthetic incidents based on environmental factors.")
         
-        if num_incidents == 0:
-            return []
-
+        if num_incidents == 0: return []
+        
         city_boundary = self.zones_gdf.union_all()
         bounds = city_boundary.bounds
         incidents = []
         incident_types = list(self.data_config.get('distributions', {}).get('incident_type', {}).keys())
-
-        if not incident_types:
-            logger.warning("No incident types defined in config distributions. Cannot generate synthetic incidents.")
-            return []
-
+        if not incident_types: return []
+        
         num_to_generate = int(num_incidents * 1.5)
         lons = np.random.uniform(bounds[0], bounds[2], num_to_generate)
         lats = np.random.uniform(bounds[1], bounds[3], num_to_generate)
         points = gpd.GeoSeries([Point(lon, lat) for lon, lat in zip(lons, lats)])
         valid_points = points[points.within(city_boundary)]
-
-        for i, point in enumerate(valid_points.head(num_incidents)):
-            incidents.append({
-                'id': f"SYN-{i}",
-                'type': np.random.choice(incident_types),
-                'triage': 'Red',
-                'location': {'lat': point.y, 'lon': point.x},
-                'timestamp': datetime.utcnow().isoformat()
-            })
         
+        for i, point in enumerate(valid_points.head(num_incidents)):
+            incidents.append({'id': f"SYN-{i}", 'type': np.random.choice(incident_types), 'triage': 'Red', 'location': {'lat': point.y, 'lon': point.x}, 'timestamp': datetime.utcnow().isoformat()})
         return incidents
 
     def generate_sample_history_file(self) -> io.BytesIO:
@@ -303,51 +251,46 @@ class PredictiveAnalyticsEngine:
     def __init__(self, dm: DataManager, config: Dict[str, Any]):
         self.dm = dm
         self.config = config
-        self.model_params = config['model_params']
+        
+        # --- THIS IS THE FIX ---
+        # Access the nested 'model' and 'data' dictionaries from the config
+        self.model_config = config.get('model', {})
+        self.data_config = config.get('data', {})
+        self.model_params = self.model_config.get('params', {})
+        # --- END OF FIX ---
+        
         self.forecast_df = pd.DataFrame()
-
-        # --- MLOps Integration: Load models dynamically ---
-        # Get model names from config, with sensible defaults
-        ml_models_config = self.config.get("ml_models", {})
+        
+        ml_models_config = self.model_config.get("ml_models", {})
         tcnn_model_name = ml_models_config.get("tcnn_name", "phoenix_tcnn")
-
+        
         self.bn_model = self._build_bayesian_network()
         self.tcnn_model = self._load_tcnn_model(tcnn_model_name)
-
-        # --- Rest of initialization ---
+        
         weights_config = self.model_params.get('ensemble_weights', {})
         total_weight = sum(weights_config.values())
         self.method_weights = {k: v / total_weight for k, v in weights_config.items()} if total_weight > 0 else {}
         self.gnn_structural_risk = AdvancedAnalyticsLayer._calculate_gnn_risk(self.dm.road_graph)
 
     def _load_tcnn_model(self, model_name: str) -> Optional[object]:
-        """
-        Loads the TCNN model from the MLflow Model Registry.
-        This enables dynamic model updates without redeploying the application.
-        """
-        if not TORCH_AVAILABLE:
-            return None
+        if not TORCH_AVAILABLE: return None
         try:
-            # The model URI points to the registered model in MLflow
             model_uri = f"models:/{model_name}/Production"
             model = mlflow.pytorch.load_model(model_uri)
             logger.info(f"Successfully loaded TCNN model '{model_name}' from MLflow Registry.")
             return model
         except Exception as e:
-            # Fallback to creating a dummy model if loading fails
-            logger.error(f"Failed to load TCNN model '{model_name}' from MLflow. TCNN will be disabled. Error: {e}", exc_info=True)
-            return TCNN(**self.config.get('tcnn_params', {})) # returns a disabled model if torch is available but mlflow fails
+            logger.error(f"Failed to load TCNN model '{model_name}' from MLflow. TCNN disabled. Error: {e}", exc_info=True)
+            # CORRECTED: Use the nested config for fallback
+            tcnn_params = self.model_config.get('tcnn_params', {})
+            return TCNN(**tcnn_params)
 
     @st.cache_resource
     def _build_bayesian_network(_self) -> Optional[BayesianNetwork]:
-        """
-        Builds and validates the Bayesian Network from config.
-        In a full MLOps cycle, this could also be replaced by loading a
-        pre-trained model from a registry like MLflow.
-        """
         if not PGMPY_AVAILABLE: return None
         try:
-            bn_config = _self.config.get('bayesian_network', {})
+            # CORRECTED: Use the nested model config
+            bn_config = _self.model_config.get('bayesian_network', {})
             if not bn_config:
                 logger.warning("Bayesian network configuration is missing. Disabling.")
                 return None
@@ -363,7 +306,6 @@ class PredictiveAnalyticsEngine:
 
     @st.cache_data
     def generate_kpis(_self, historical_data: List[Dict], env_factors: EnvFactors, current_incidents: List[Dict]) -> pd.DataFrame:
-        """Master method to generate all Key Performance Indicators (KPIs)."""
         kpi_cols = [
             'Incident Probability', 'Expected Incident Volume', 'Risk Entropy', 'Anomaly Score', 
             'Spatial Spillover Risk', 'Resource Adequacy Index', 'Chaos Sensitivity Score', 
@@ -410,7 +352,8 @@ class PredictiveAnalyticsEngine:
         else: baseline_rate, kpi_df['Bayesian Confidence Score'] = 5.0, 0.5
         
         baseline_rate *= day_time_multiplier * event_multiplier
-        prior_dist = pd.Series(_self.config['data'].get('distributions', {}).get('zone', {})).reindex(_self.dm.zones, fill_value=1e-9)
+        # CORRECTED: Use the scoped data_config
+        prior_dist = pd.Series(_self.data_config.get('distributions', {}).get('zone', {})).reindex(_self.dm.zones, fill_value=1e-9)
         current_dist = incident_counts / (incident_counts.sum() + 1e-9)
         kpi_df['Anomaly Score'] = np.nansum(current_dist * np.log(current_dist / (prior_dist + 1e-9)))
         kpi_df['Risk Entropy'] = -np.nansum(current_dist * np.log2(current_dist.replace(0,1e-9)))
@@ -431,9 +374,9 @@ class PredictiveAnalyticsEngine:
         kpi_df['Ensemble Risk Score'] = _self._calculate_ensemble_risk_score(kpi_df, historical_data)
         kpi_df['Information Value Index'] = kpi_df['Ensemble Risk Score'].std()
         kpi_df['STGP_Risk'] = AdvancedAnalyticsLayer._calculate_stgp_risk(incidents_with_zones, _self.dm.zones_gdf)
-        kpi_df['HMM_State_Risk'] = AdvancedAnalyticsLayer._calculate_hmm_risk(kpi_df)
+        kpi_df['HMM_State_Risk'] = AdvancedAnalyticsLayer._calculate_hmm_risk(kpi_df.reset_index())
         kpi_df['GNN_Structural_Risk'] = _self.gnn_structural_risk
-        kpi_df['Game_Theory_Tension'] = AdvancedAnalyticsLayer._calculate_game_theory_tension(kpi_df)
+        kpi_df['Game_Theory_Tension'] = AdvancedAnalyticsLayer._calculate_game_theory_tension(kpi_df.reset_index())
         
         adv_weights = _self.model_params.get('advanced_model_weights', {})
         kpi_df['Integrated_Risk_Score'] = (
@@ -447,7 +390,6 @@ class PredictiveAnalyticsEngine:
         return kpi_df.fillna(0).reset_index().rename(columns={'index': 'Zone'})
 
     def generate_kpis_with_sparklines(self, historical_data: List[Dict], env_factors: EnvFactors, current_incidents: List[Dict]) -> Tuple[pd.DataFrame, Dict[str, Dict]]:
-        """Wrapper that generates KPIs and simulated historical trends for UI gauges."""
         kpi_df = self.generate_kpis(historical_data, env_factors, current_incidents)
         sparkline_data = {}
         def create_gauge_data(current_value, history_generator):
@@ -469,7 +411,6 @@ class PredictiveAnalyticsEngine:
         return kpi_df, sparkline_data
         
     def _calculate_lyapunov_exponent(self, historical_data: List[Dict]) -> float:
-        """Calculates a proxy for the Lyapunov exponent to measure system chaos."""
         if len(historical_data) < 2: return 0.0
         try:
             series = pd.Series([len(h.get('incidents', [])) for h in historical_data])
@@ -478,7 +419,6 @@ class PredictiveAnalyticsEngine:
         except Exception: return 0.0
 
     def _calculate_ensemble_risk_score(self, kpi_df: pd.DataFrame, historical_data: List[Dict]) -> pd.Series:
-        """Blends foundational model outputs into a robust ensemble score."""
         if kpi_df.empty or not self.method_weights: return pd.Series(0.0, index=kpi_df.index)
         norm_df = pd.DataFrame(index=kpi_df.index)
         def normalize(s):
@@ -500,9 +440,9 @@ class PredictiveAnalyticsEngine:
         return aligned_scores.dot(aligned_weights).clip(0, 1)
 
     def generate_forecast(self, kpi_df: pd.DataFrame) -> pd.DataFrame:
-        """Generates a risk forecast for all zones."""
         if kpi_df.empty: return pd.DataFrame()
         forecast_data = []
+        # CORRECTED: Use the top-level config for app parameters
         for _, row in kpi_df.iterrows():
             for horizon in self.config.get('forecast_horizons_hours', []):
                 decay = self.model_params.get('fallback_forecast_decay_rates', {}).get(str(horizon), 0.5)
@@ -522,7 +462,6 @@ class PredictiveAnalyticsEngine:
         return self.forecast_df
         
     def _post_process_allocations(self, allocations: Dict[str, Any], available_units: int, sort_key: pd.Series) -> Dict[str, int]:
-        """Rounds allocations and adjusts to match total available units."""
         final = {z: int(round(v)) for z, v in allocations.items()}
         diff = available_units - sum(final.values())
         if diff != 0:
@@ -537,7 +476,6 @@ class PredictiveAnalyticsEngine:
         return final
 
     def _allocate_proportional(self, kpi_df: pd.DataFrame, available_units: int) -> Dict[str, int]:
-        """Allocates units proportionally to the integrated risk score."""
         logger.info("Using Proportional Allocation strategy.")
         risk = kpi_df.set_index('Zone')['Integrated_Risk_Score']
         if risk.sum() == 0:
@@ -548,7 +486,6 @@ class PredictiveAnalyticsEngine:
         return self._post_process_allocations(alloc, available_units, risk)
 
     def _allocate_milp(self, kpi_df: pd.DataFrame, available_units: int) -> Dict[str, int]:
-        """Allocates units using Mixed-Integer Linear Programming."""
         logger.info("Using MILP (Linear Optimization) strategy.")
         zones, risk = kpi_df['Zone'].tolist(), kpi_df['Integrated_Risk_Score'].values
         res = milp(c=-risk, constraints=[LinearConstraint(np.ones((1, len(zones))), lb=available_units, ub=available_units)], integrality=np.ones_like(risk), bounds=(0, available_units))
@@ -557,7 +494,6 @@ class PredictiveAnalyticsEngine:
         return self._allocate_proportional(kpi_df, available_units)
 
     def _allocate_nlp(self, kpi_df: pd.DataFrame, available_units: int) -> Dict[str, int]:
-        """Allocates using Non-Linear Programming."""
         logger.info("Using NLP (Non-Linear Optimization) strategy.")
         zones = kpi_df['Zone'].tolist()
         risk = kpi_df['Integrated_Risk_Score'].values
@@ -577,7 +513,6 @@ class PredictiveAnalyticsEngine:
         return self._allocate_proportional(kpi_df, available_units)
 
     def generate_allocation_recommendations(self, kpi_df: pd.DataFrame) -> Dict[str, int]:
-        """Generates optimal resource allocation recommendations."""
         if kpi_df.empty or kpi_df['Integrated_Risk_Score'].sum() == 0:
             return {zone: 0 for zone in self.dm.zones}
         units = sum(1 for a in self.dm.ambulances.values() if a['status'] == 'Disponible')
