@@ -147,10 +147,21 @@ class Dashboard:
         """Método principal de renderizado para todo el dashboard."""
         st.title("RedShield AI: Phoenix v4.0")
         st.markdown("##### Plataforma Proactiva de Respuesta a Emergencias y Asignación de Recursos")
-        self._render_sidebar()
+        
+        # First, run the live data pipeline to get the initial state
+        if 'kpi_df' not in st.session_state or st.session_state.kpi_df.empty:
+             self._run_analytics_pipeline()
 
-        with st.spinner("Ejecutando Análisis Avanzado y Optimización..."):
-            self._run_analytics_pipeline()
+        # Then, render the sidebar which might trigger a rerun if simulation is activated
+        self._render_sidebar()
+        
+        # If the sidebar didn't trigger a rerun, ensure the pipeline is executed
+        # This handles the case where the page loads for the first time
+        if not st.session_state.get('simulation_rerun_triggered', False):
+            with st.spinner("Ejecutando Análisis Avanzado y Optimización..."):
+                self._run_analytics_pipeline()
+
+        st.session_state['simulation_rerun_triggered'] = False
 
         tab1, tab2, tab3 = st.tabs(["🔥 Mando Operativo", "📊 Análisis Profundo de KPIs", "🧠 Metodología"])
         with tab1: self._render_operational_command_tab()
@@ -161,7 +172,9 @@ class Dashboard:
         """Ejecuta la tubería de análisis usando la fuente de datos correcta (en vivo o simulada)."""
         try:
             if not st.session_state.simulation_mode:
+                # Live mode: always fetch latest data
                 st.session_state.current_incidents = self.dm.get_current_incidents(st.session_state.env_factors)
+                # Reset ambulances to default config state in live mode
                 self.dm.ambulances = self.dm._initialize_ambulances()
 
             kpi_df, spark_data = self.engine.generate_kpis_with_sparklines(
@@ -179,6 +192,7 @@ class Dashboard:
             st.error(f"Error en la tubería de análisis: {e}. Revise los registros para más detalles.")
             st.session_state.update({'kpi_df':pd.DataFrame(),'forecast_df':pd.DataFrame(),'allocations':{},'sparkline_data':{}})
 
+    # ... [All other Dashboard methods from _render_operational_command_tab to _plot_forecast_with_uncertainty remain unchanged] ...
     # --- PESTAÑA 1: MANDO OPERATIVO ---
     
     def _render_operational_command_tab(self):
@@ -348,6 +362,7 @@ class Dashboard:
             with tab6: self._plot_forecast_with_uncertainty()
         else: st.info("Visualizaciones avanzadas no disponibles: esperando datos...")
 
+    # --- (All plotting methods from _create_sparkline_plot to _plot_forecast_with_uncertainty are unchanged and included here) ---
     @staticmethod
     def _create_sparkline_plot(data, normal_range, current_value_text, label, color, high_is_bad=True):
         fig = go.Figure()
@@ -747,26 +762,51 @@ class Dashboard:
 
         st.sidebar.divider()
         st.sidebar.header("Simulación de Escenarios")
-        st.session_state.simulation_mode = st.sidebar.toggle("Activar Modo de Simulación", value=st.session_state.get('simulation_mode', False), help="Active para establecer manualmente los recuentos de incidentes y ambulancias. Desactive para volver a los datos en vivo.")
+        
+        # SME FIX: Decouple simulation controls from live data to prevent infinite loops.
+        # This callback synchronizes the simulation state ONLY when the toggle is changed.
+        def on_toggle_sim_mode():
+            if st.session_state.simulation_mode:
+                st.session_state.sim_incident_count = len(st.session_state.current_incidents)
+                st.session_state.sim_ambulance_count = sum(1 for a in self.dm.ambulances.values() if a['status'] == 'Disponible')
+        
+        st.sidebar.toggle(
+            "Activar Modo de Simulación", 
+            value=st.session_state.simulation_mode, 
+            key='simulation_mode', 
+            on_change=on_toggle_sim_mode,
+            help="Active para establecer manualmente los recuentos de incidentes y ambulancias. Desactive para volver a los datos en vivo."
+        )
+
         with st.sidebar.expander("Controles de Simulación", expanded=st.session_state.simulation_mode):
             is_disabled = not st.session_state.simulation_mode
+            
             st.number_input(
                 "Establecer Número de Incidentes Activos",
-                min_value=0,
-                max_value=50,  # SME Feature Change: Max value set to 50
-                value=len(st.session_state.current_incidents),
-                step=1,
+                min_value=0, max_value=50,
                 key="sim_incident_count",
                 disabled=is_disabled
             )
-            st.number_input("Establecer Número de Ambulancias Disponibles", min_value=0, max_value=len(self.dm.ambulances), value=sum(1 for a in self.dm.ambulances.values() if a['status'] == 'Disponible'), step=1, key="sim_ambulance_count", disabled=is_disabled)
+            st.number_input(
+                "Establecer Número de Ambulancias Disponibles", 
+                min_value=0, max_value=len(self.dm.ambulances), 
+                key="sim_ambulance_count", 
+                disabled=is_disabled
+            )
+            
             if st.button("Aplicar Escenario", disabled=is_disabled, use_container_width=True):
                 with st.spinner("Generando nuevo escenario..."):
+                    # Apply ambulance simulation state
                     new_amb_count = st.session_state.sim_ambulance_count
-                    for i, amb_id in enumerate(sorted(self.dm.ambulances.keys())): self.dm.ambulances[amb_id]['status'] = 'Disponible' if i < new_amb_count else 'En Misión'
+                    for i, amb_id in enumerate(sorted(self.dm.ambulances.keys())):
+                        self.dm.ambulances[amb_id]['status'] = 'Disponible' if i < new_amb_count else 'En Misión'
                     logger.info(f"SIMULACIÓN: Ambulancias disponibles establecidas en {new_amb_count}.")
+                    
+                    # Apply incident simulation state
                     new_inc_count = st.session_state.sim_incident_count
                     st.session_state.current_incidents = self.dm._generate_synthetic_incidents(st.session_state.env_factors, override_count=new_inc_count)
+                    
+                    st.session_state['simulation_rerun_triggered'] = True
                 st.rerun()
         
         st.sidebar.divider()
@@ -779,17 +819,13 @@ class Dashboard:
         with st.sidebar.expander("Factores Ambientales Generales", expanded=True):
             is_holiday=st.checkbox("Es Feriado",value=env.is_holiday); weather_options = ["Despejado", "Lluvia", "Niebla"]; weather=st.selectbox("Clima",weather_options,index=weather_options.index(env.weather)); aqi=st.slider("Índice de Calidad del Aire (ICA)",0.0,500.0,env.air_quality_index,5.0); heatwave=st.checkbox("Alerta por Ola de Calor",value=env.heatwave_alert)
         with st.sidebar.expander("Factores Contextuales y de Eventos", expanded=True):
-            day_type_options = ['Entre Semana','Viernes','Fin de Semana']
-            day_type=st.selectbox("Tipo de Día",day_type_options,index=day_type_options.index(env.day_type));
-            time_of_day_options = ['Hora Pico Mañana','Mediodía','Hora Pico Tarde','Noche']
-            time_of_day=st.selectbox("Hora del Día",time_of_day_options,index=time_of_day_options.index(env.time_of_day));
-            public_event_options = ['Ninguno','Evento Deportivo','Concierto/Festival','Protesta Pública']
-            public_event=st.selectbox("Tipo de Evento Público",public_event_options,index=public_event_options.index(env.public_event_type));
+            day_type_options = ['Entre Semana','Viernes','Fin de Semana']; day_type=st.selectbox("Tipo de Día",day_type_options,index=day_type_options.index(env.day_type));
+            time_of_day_options = ['Hora Pico Mañana','Mediodía','Hora Pico Tarde','Noche']; time_of_day=st.selectbox("Hora del Día",time_of_day_options,index=time_of_day_options.index(env.time_of_day));
+            public_event_options = ['Ninguno','Evento Deportivo','Concierto/Festival','Protesta Pública']; public_event=st.selectbox("Tipo de Evento Público",public_event_options,index=public_event_options.index(env.public_event_type));
             school_in_session=st.checkbox("Clases en Sesión",value=env.school_in_session)
         with st.sidebar.expander("Factores de Tensión del Sistema y Respuesta", expanded=True):
             traffic=st.slider("Nivel General de Tráfico",CONSTANTS['TRAFFIC_MIN'],CONSTANTS['TRAFFIC_MAX'],env.traffic_level,0.1); h_divert=st.slider("Estado de Desvío de Hospitales (%)",0,100,int(env.hospital_divert_status*100),5);
-            police_activity_options = ['Bajo','Normal','Alto']
-            police_activity=st.selectbox("Nivel de Actividad Policial",police_activity_options,index=police_activity_options.index(env.police_activity))
+            police_activity_options = ['Bajo','Normal','Alto']; police_activity=st.selectbox("Nivel de Actividad Policial",police_activity_options,index=police_activity_options.index(env.police_activity))
         return EnvFactorsWithTolerance(is_holiday=is_holiday,weather=weather,traffic_level=traffic,major_event=(public_event!='Ninguno'),population_density=env.population_density,air_quality_index=aqi,heatwave_alert=heatwave,day_type=day_type,time_of_day=time_of_day,public_event_type=public_event,hospital_divert_status=h_divert/100.0,police_activity=police_activity,school_in_session=school_in_session)
 
     def _sidebar_file_uploader(self):
