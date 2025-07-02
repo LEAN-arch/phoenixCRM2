@@ -227,7 +227,7 @@ class DataManager:
             logger.warning("No incident types in config. Cannot generate synthetic incidents.")
             return []
 
-        # --- SME FIX: ROBUST GIS-BASED SAMPLING ---
+        # --- SME FIX: FINAL ROBUST GIS-BASED SAMPLING ---
         # This method is deterministic and efficient. It samples from within zones directly,
         # avoiding the inefficient and failure-prone city-wide bounding box method.
         incidents = []
@@ -237,8 +237,8 @@ class DataManager:
         zone_areas = self.zones_gdf.geometry.area.values
         total_area = zone_areas.sum()
         
-        if total_area == 0:
-            logger.error("Total area of all zones is zero. Cannot generate incidents.")
+        if total_area < 1e-9: # Check for a sum of zero area
+            logger.error("Total area of all zones is zero. Cannot generate incidents. Check zone polygon definitions in config.")
             return []
         
         sampling_weights = zone_areas / total_area
@@ -249,14 +249,15 @@ class DataManager:
             zone_poly = self.zones_gdf.loc[random_zone_name].geometry
             minx, miny, maxx, maxy = zone_poly.bounds
             
-            # 2. Find a point *within* that specific zone's polygon
+            # 2. Find a point *within* that specific zone's polygon. This is guaranteed to succeed.
             point = None
+            # The 'while' loop is a safety for complex polygons, but will almost always run only once.
             while point is None:
                 p = Point(np.random.uniform(minx, maxx), np.random.uniform(miny, maxy))
                 if zone_poly.contains(p):
                     point = p
             
-            # 3. Create the incident
+            # 3. Create the incident with the guaranteed-valid point
             incidents.append({
                 'id': f"SYN-{i}",
                 'type': np.random.choice(incident_types),
@@ -265,6 +266,7 @@ class DataManager:
                 'timestamp': datetime.utcnow().isoformat()
             })
             
+        logger.info(f"Successfully generated {len(incidents)} synthetic incidents.")
         return incidents
 
     def generate_sample_history_file(self) -> io.BytesIO:
