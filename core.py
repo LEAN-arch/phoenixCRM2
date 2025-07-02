@@ -560,7 +560,8 @@ class PredictiveAnalyticsEngine:
         risk = kpi_df.set_index('Zone')['Integrated_Risk_Score']
         if risk.sum() == 0:
             alloc = {z: available_units // len(self.dm.zones) for z in self.dm.zones}
-            alloc[self.dm.zones[0]] += available_units % len(self.dm.zones)
+            if len(self.dm.zones) > 0:
+                alloc[self.dm.zones[0]] += available_units % len(self.dm.zones)
             return alloc
         alloc = (available_units * risk / risk.sum()).to_dict()
         return self._post_process_allocations(alloc, available_units, risk)
