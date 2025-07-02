@@ -1,7 +1,5 @@
 # core.py
 """
-Core business logic for the RedShield AI Phoenix application.# core.py
-"""
 Core business logic for the RedShield AI Phoenix application.
 
 This module contains the primary classes responsible for data management,
@@ -131,6 +129,7 @@ class DataManager:
         self.laplacian_matrix = self._compute_laplacian_matrix()
 
     def _build_road_graph(self) -> nx.Graph:
+        """Builds the road network graph from configuration."""
         G = nx.Graph()
         G.add_nodes_from(self.zones)
         edges = self.data_config.get('road_network', {}).get('edges', [])
@@ -140,6 +139,7 @@ class DataManager:
         return G
 
     def _build_zones_gdf(self) -> gpd.GeoDataFrame:
+        """Builds the GeoDataFrame of operational zones from configuration."""
         zone_data = []
         for name, data in self.data_config['zones'].items():
             try:
@@ -158,6 +158,7 @@ class DataManager:
         return gdf
 
     def _initialize_ambulances(self) -> Dict[str, Any]:
+        """Initializes ambulance fleet from configuration."""
         ambulances = {}
         for amb_id, data in self.data_config['ambulances'].items():
             try:
@@ -168,6 +169,7 @@ class DataManager:
         return ambulances
 
     def _compute_laplacian_matrix(self) -> np.ndarray:
+        """Computes the normalized graph Laplacian matrix for spatial analysis."""
         try:
             sorted_zones = sorted(self.road_graph.nodes())
             laplacian = nx.normalized_laplacian_matrix(self.road_graph, nodelist=sorted_zones).toarray()
@@ -178,6 +180,7 @@ class DataManager:
             return np.eye(len(self.zones))
 
     def get_current_incidents(self, env_factors: EnvFactors) -> List[Dict[str, Any]]:
+        """Fetches real-time incidents, falling back to synthetic data on failure."""
         api_config = self.data_config.get('real_time_api', {})
         endpoint = api_config.get('endpoint', '')
         try:
@@ -199,6 +202,7 @@ class DataManager:
             return self._generate_synthetic_incidents(env_factors)
 
     def _validate_incidents(self, incidents: List[Dict]) -> List[Dict]:
+        """Validates the structure and data types of incoming incident records."""
         valid_incidents = []
         for inc in incidents:
             loc = inc.get('location')
@@ -212,6 +216,7 @@ class DataManager:
         return valid_incidents
 
     def _generate_synthetic_incidents(self, env_factors: EnvFactors, override_count: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Generates a reliable and deterministic number of synthetic incidents."""
         if override_count is not None:
             num_incidents = override_count
             logger.info(f"Generating {num_incidents} synthetic incidents based on user override.")
@@ -229,37 +234,29 @@ class DataManager:
             logger.warning("No incident types in config. Cannot generate synthetic incidents.")
             return []
 
-        # --- SME FIX: FINAL ROBUST GIS-BASED SAMPLING ---
-        # This method is deterministic and efficient. It samples from within zones directly,
-        # avoiding the inefficient and failure-prone city-wide bounding box method.
         incidents = []
         
-        # Create sampling weights based on zone area to make generation more realistic
         zone_names = self.zones_gdf.index.tolist()
         zone_areas = self.zones_gdf.geometry.area.values
         total_area = zone_areas.sum()
         
-        if total_area < 1e-9: # Check for a sum of zero area
+        if total_area < 1e-9:
             logger.error("Total area of all zones is zero. Cannot generate incidents. Check zone polygon definitions in config.")
             return []
         
         sampling_weights = zone_areas / total_area
         
         for i in range(num_incidents):
-            # 1. Pick a zone, weighted by its area
             random_zone_name = np.random.choice(zone_names, p=sampling_weights)
             zone_poly = self.zones_gdf.loc[random_zone_name].geometry
             minx, miny, maxx, maxy = zone_poly.bounds
             
-            # 2. Find a point *within* that specific zone's polygon. This is guaranteed to succeed.
             point = None
-            # The 'while' loop is a safety for complex polygons, but will almost always run only once.
             while point is None:
                 p = Point(np.random.uniform(minx, maxx), np.random.uniform(miny, maxy))
                 if zone_poly.contains(p):
                     point = p
             
-            # 3. Create the incident with the guaranteed-valid point
             incidents.append({
                 'id': f"SYN-{i}",
                 'type': np.random.choice(incident_types),
@@ -306,6 +303,7 @@ class PredictiveAnalyticsEngine:
         self.gnn_structural_risk = AdvancedAnalyticsLayer._calculate_gnn_risk(self.dm.road_graph)
 
     def _load_tcnn_model(self, model_name: str) -> Optional[object]:
+        """Loads the TCNN model from MLflow, with a fallback."""
         if not TORCH_AVAILABLE: return None
         try:
             model_uri = f"models:/{model_name}/Production"
@@ -319,6 +317,7 @@ class PredictiveAnalyticsEngine:
 
     @st.cache_resource
     def _build_bayesian_network(_self) -> Optional[BayesianNetwork]:
+        """Builds and caches the Bayesian Network from configuration."""
         if not PGMPY_AVAILABLE: return None
         try:
             bn_config = _self.model_config.get('bayesian_network', {})
@@ -349,10 +348,8 @@ class PredictiveAnalyticsEngine:
             'GNN_Structural_Risk', 'Game_Theory_Tension', 'Integrated_Risk_Score'
         ]
         
-        # --- I. Initial Setup & Data Preparation ---
         all_incidents = [inc for h in historical_data for inc in h.get('incidents', []) if isinstance(h, dict)] + current_incidents
         
-        # --- SAFETY NET ---
         if not all_incidents:
             logger.info("No incidents found (real or synthetic). Returning a zero-value KPI DataFrame.")
             kpi_df = pd.DataFrame(0, index=_self.dm.zones, columns=kpi_cols)
@@ -370,7 +367,6 @@ class PredictiveAnalyticsEngine:
             kpi_df.index.name = 'Zone'
             return kpi_df.reset_index()
 
-        # --- II. Unpack Parameters & Calculate Contextual Modifiers ---
         params = _self.model_params
         hawkes_params = params.get('hawkes_process', {})
         sir_params = params.get('sir_model', {})
@@ -384,7 +380,6 @@ class PredictiveAnalyticsEngine:
         police_activity_mod = {'Bajo': 1.1, 'Normal': 1.0, 'Alto': 0.85}.get(env_factors.police_activity, 1.0)
         system_strain_penalty = 1.0 + (env_factors.hospital_divert_status * params.get('hospital_strain_multiplier', 2.0))
         
-        # --- III. Foundational KPI Calculations ---
         incident_counts = incidents_with_zones['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
         if _self.bn_model:
             try:
@@ -401,10 +396,8 @@ class PredictiveAnalyticsEngine:
         prior_dist = pd.Series(_self.data_config.get('distributions', {}).get('zone', {})).reindex(_self.dm.zones, fill_value=1e-9)
         current_dist = incident_counts / (incident_counts.sum() + 1e-9)
         
-        # --- NUMERICAL STABILITY ---
         kpi_df['Anomaly Score'] = np.nansum(current_dist * np.log((current_dist + 1e-9) / (prior_dist + 1e-9)))
         kpi_df['Risk Entropy'] = -np.nansum(current_dist * np.log2(current_dist + 1e-9))
-        
         kpi_df['Chaos Sensitivity Score'] = _self._calculate_lyapunov_exponent(historical_data)
         base_probs = (baseline_rate * prior_dist * _self.dm.zones_gdf['crime_rate_modifier']).clip(0, 1)
         kpi_df['Incident Probability'] = base_probs
@@ -425,7 +418,6 @@ class PredictiveAnalyticsEngine:
         kpi_df['Resource Adequacy Index'] = (available_units / (kpi_df['Expected Incident Volume'].sum() * system_strain_penalty + 1e-9)).clip(0, 1)
         kpi_df['Response Time Estimate'] = (10.0 * system_strain_penalty) * (1 + params.get('response_time_penalty', 3.0) * (1 - kpi_df['Resource Adequacy Index']))
         
-        # --- IV. Advanced and Synthesized KPIs ---
         kpi_df['Ensemble Risk Score'] = _self._calculate_ensemble_risk_score(kpi_df, historical_data)
         kpi_df['Information Value Index'] = kpi_df['Ensemble Risk Score'].std()
         
@@ -447,6 +439,7 @@ class PredictiveAnalyticsEngine:
         return kpi_df.fillna(0).reset_index().rename(columns={'index': 'Zone'})
 
     def generate_kpis_with_sparklines(self, historical_data: List[Dict], env_factors: EnvFactors, current_incidents: List[Dict]) -> Tuple[pd.DataFrame, Dict[str, Dict]]:
+        """Generates KPIs and supplementary sparkline data for the UI."""
         kpi_df = self.generate_kpis(historical_data, env_factors, current_incidents)
         sparkline_data = {}
         def create_gauge_data(current_value, history_generator):
@@ -468,6 +461,7 @@ class PredictiveAnalyticsEngine:
         return kpi_df, sparkline_data
         
     def _calculate_lyapunov_exponent(self, historical_data: List[Dict]) -> float:
+        """Calculates the Lyapunov exponent as a proxy for system chaos."""
         if len(historical_data) < 2: return 0.0
         try:
             series = pd.Series([len(h.get('incidents', [])) for h in historical_data])
@@ -476,6 +470,7 @@ class PredictiveAnalyticsEngine:
         except Exception: return 0.0
 
     def _calculate_ensemble_risk_score(self, kpi_df: pd.DataFrame, historical_data: List[Dict]) -> pd.Series:
+        """Calculates the weighted ensemble risk score from foundational KPIs."""
         if kpi_df.empty or not self.method_weights: return pd.Series(0.0, index=kpi_df.index)
         norm_df = pd.DataFrame(index=kpi_df.index)
         def normalize(s):
@@ -497,6 +492,7 @@ class PredictiveAnalyticsEngine:
         return aligned_scores.dot(aligned_weights).clip(0, 1)
 
     def generate_forecast(self, kpi_df: pd.DataFrame) -> pd.DataFrame:
+        """Generates a risk forecast with uncertainty bounds."""
         if kpi_df.empty: return pd.DataFrame()
         forecast_data = []
         for _, row in kpi_df.iterrows():
@@ -533,6 +529,7 @@ class PredictiveAnalyticsEngine:
         return final
 
     def _allocate_proportional(self, kpi_df: pd.DataFrame, available_units: int) -> Dict[str, int]:
+        """Allocates resources proportionally based on risk scores."""
         logger.info("Using Proportional Allocation strategy.")
         risk = kpi_df.set_index('Zone')['Integrated_Risk_Score']
         if risk.sum() == 0:
@@ -543,6 +540,7 @@ class PredictiveAnalyticsEngine:
         return self._post_process_allocations(alloc, available_units, risk)
 
     def _allocate_milp(self, kpi_df: pd.DataFrame, available_units: int) -> Dict[str, int]:
+        """Allocates resources using Mixed-Integer Linear Programming."""
         logger.info("Using MILP (Linear Optimization) strategy.")
         zones, risk = kpi_df['Zone'].tolist(), kpi_df['Integrated_Risk_Score'].values
         res = milp(c=-risk, constraints=[LinearConstraint(np.ones((1, len(zones))), lb=available_units, ub=available_units)], integrality=np.ones_like(risk), bounds=(0, available_units))
@@ -551,6 +549,7 @@ class PredictiveAnalyticsEngine:
         return self._allocate_proportional(kpi_df, available_units)
 
     def _allocate_nlp(self, kpi_df: pd.DataFrame, available_units: int) -> Dict[str, int]:
+        """Allocates resources using Non-Linear Programming."""
         logger.info("Using NLP (Non-Linear Optimization) strategy.")
         zones = kpi_df['Zone'].tolist()
         risk = kpi_df['Integrated_Risk_Score'].values
@@ -570,6 +569,7 @@ class PredictiveAnalyticsEngine:
         return self._allocate_proportional(kpi_df, available_units)
 
     def generate_allocation_recommendations(self, kpi_df: pd.DataFrame) -> Dict[str, int]:
+        """Generates resource allocation recommendations based on the selected strategy."""
         if kpi_df.empty or 'Integrated_Risk_Score' not in kpi_df.columns or kpi_df['Integrated_Risk_Score'].sum() == 0:
             return {zone: 0 for zone in self.dm.zones}
         units = sum(1 for a in self.dm.ambulances.values() if a['status'] == 'Disponible')
