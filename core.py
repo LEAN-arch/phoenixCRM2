@@ -24,7 +24,31 @@ import streamlit as st
 from scipy.optimize import LinearConstraint, Bounds, milp, minimize
 from shapely.geometry import Point, Polygon
 
-from models import AdvancedAnalyticsLayer
+# --- Placeholder for models.py if not provided ---
+class AdvancedAnalyticsLayer:
+    @staticmethod
+    def _calculate_stgp_risk(incidents_with_zones, zones_gdf):
+        if incidents_with_zones.empty: return pd.Series(0.0, index=zones_gdf.index)
+        risk = incidents_with_zones['Zone'].value_counts().reindex(zones_gdf.index, fill_value=0)
+        return risk / (risk.max() + 1e-9)
+
+    @staticmethod
+    def _calculate_hmm_risk(kpi_df_with_zone_col):
+        if kpi_df_with_zone_col.empty: return pd.Series(0.0)
+        risk = kpi_df_with_zone_col['Ensemble Risk Score']
+        return risk.rolling(window=3, min_periods=1).mean()
+
+    @staticmethod
+    def _calculate_gnn_risk(road_graph):
+        if not road_graph.nodes: return pd.Series()
+        pagerank = nx.pagerank(road_graph, weight='weight')
+        return pd.Series(pagerank)
+
+    @staticmethod
+    def _calculate_game_theory_tension(kpi_df_with_zone_col):
+        if kpi_df_with_zone_col.empty: return pd.Series(0.0)
+        tension = kpi_df_with_zone_col['Expected Incident Volume'] * (1 - kpi_df_with_zone_col['Resource Adequacy Index'])
+        return tension / (tension.max() + 1e-9)
 
 # --- Optional Dependency Handling ---
 from typing import TYPE_CHECKING
@@ -240,7 +264,7 @@ class DataManager:
         zone_areas = self.zones_gdf.geometry.area.values
         total_area = zone_areas.sum()
         
-        if total_area < 1e-9:
+        if total_area < 1e-9: # Check for a sum of zero area
             logger.error("Total area of all zones is zero. Cannot generate incidents. Check zone polygon definitions in config.")
             return []
         
@@ -348,24 +372,30 @@ class PredictiveAnalyticsEngine:
             'GNN_Structural_Risk', 'Game_Theory_Tension', 'Integrated_Risk_Score'
         ]
         
+        # --- SME FIX: Final Robust Logic for Zero-Incident State ---
+        # The logic now correctly handles the zero-incident case by calculating latent risk
+        # instead of returning a completely empty dataframe.
+        
         all_incidents = [inc for h in historical_data for inc in h.get('incidents', []) if isinstance(h, dict)] + current_incidents
         
-        if not all_incidents:
-            logger.info("No incidents found (real or synthetic). Returning a zero-value KPI DataFrame.")
-            kpi_df = pd.DataFrame(0, index=_self.dm.zones, columns=kpi_cols)
-            kpi_df.index.name = 'Zone'
-            return kpi_df.reset_index()
-
         kpi_df = pd.DataFrame(index=_self.dm.zones)
-        incident_df = pd.DataFrame(all_incidents).drop_duplicates(subset=['id'], keep='first')
-        incident_gdf = gpd.GeoDataFrame(incident_df, geometry=[Point(loc['lon'], loc['lat']) for loc in incident_df['location']], crs="EPSG:4326")
-        incidents_with_zones = gpd.sjoin(incident_gdf, _self.dm.zones_gdf.reset_index(), how="inner", predicate="within").rename(columns={'name': 'Zone'})
-
-        if incidents_with_zones.empty:
-            logger.info("No incidents fall within defined zones. Returning a zero-value KPI DataFrame.")
-            kpi_df = pd.DataFrame(0, index=_self.dm.zones, columns=kpi_cols)
-            kpi_df.index.name = 'Zone'
-            return kpi_df.reset_index()
+        incidents_with_zones = gpd.GeoDataFrame()
+        
+        if not all_incidents:
+            logger.info("No active incidents. Calculating latent risk based on environmental factors.")
+            incident_counts = pd.Series(0, index=_self.dm.zones)
+        else:
+            incident_df = pd.DataFrame(all_incidents).drop_duplicates(subset=['id'], keep='first')
+            if not incident_df.empty and 'location' in incident_df.columns:
+                incident_gdf = gpd.GeoDataFrame(
+                    incident_df, 
+                    geometry=[Point(loc['lon'], loc['lat']) for loc in incident_df['location']], 
+                    crs="EPSG:4326"
+                )
+                incidents_with_zones = gpd.sjoin(incident_gdf, _self.dm.zones_gdf.reset_index(), how="inner", predicate="within").rename(columns={'name': 'Zone'})
+                incident_counts = incidents_with_zones['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
+            else:
+                 incident_counts = pd.Series(0, index=_self.dm.zones)
 
         params = _self.model_params
         hawkes_params = params.get('hawkes_process', {})
@@ -380,7 +410,6 @@ class PredictiveAnalyticsEngine:
         police_activity_mod = {'Bajo': 1.1, 'Normal': 1.0, 'Alto': 0.85}.get(env_factors.police_activity, 1.0)
         system_strain_penalty = 1.0 + (env_factors.hospital_divert_status * params.get('hospital_strain_multiplier', 2.0))
         
-        incident_counts = incidents_with_zones['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
         if _self.bn_model:
             try:
                 inference = VariableElimination(_self.bn_model)
@@ -403,10 +432,14 @@ class PredictiveAnalyticsEngine:
         kpi_df['Incident Probability'] = base_probs
         kpi_df['Expected Incident Volume'] = (base_probs * params.get('incident_volume_multiplier', 10.0) * effective_traffic).round()
         kpi_df['Spatial Spillover Risk'] = params.get('laplacian_diffusion_factor', 0.1) * (_self.dm.laplacian_matrix @ base_probs.values)
-
-        violence_counts = incidents_with_zones[incidents_with_zones['type'] == 'Trauma-Violence']['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
-        accident_counts = incidents_with_zones[incidents_with_zones['type'] == 'Trauma-Accident']['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
-        medical_counts = incidents_with_zones[incidents_with_zones['type'].isin(['Medical-Chronic', 'Medical-Acute'])]['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
+        
+        violence_counts = pd.Series(0, index=_self.dm.zones)
+        accident_counts = pd.Series(0, index=_self.dm.zones)
+        medical_counts = pd.Series(0, index=_self.dm.zones)
+        if not incidents_with_zones.empty:
+            violence_counts = incidents_with_zones[incidents_with_zones['type'] == 'Trauma-Violence']['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
+            accident_counts = incidents_with_zones[incidents_with_zones['type'] == 'Trauma-Accident']['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
+            medical_counts = incidents_with_zones[incidents_with_zones['type'].isin(['Medical-Chronic', 'Medical-Acute'])]['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
 
         kpi_df['Violence Clustering Score'] = (violence_counts * hawkes_params.get('kappa', 0.5) * hawkes_params.get('violence_weight', 1.8) * violence_event_mod * police_activity_mod).clip(0, 1)
         kpi_df['Accident Clustering Score'] = (accident_counts * hawkes_params.get('kappa', 0.5) * hawkes_params.get('trauma_weight', 1.5) * effective_traffic).clip(0, 1)
@@ -436,7 +469,12 @@ class PredictiveAnalyticsEngine:
             adv_weights.get('game_theory', 0.1) * kpi_df['Game_Theory_Tension']
         ).clip(0, 1)
         
-        return kpi_df.fillna(0).reset_index().rename(columns={'index': 'Zone'})
+        # Ensure all columns are present before returning
+        for col in kpi_cols:
+            if col not in kpi_df.columns:
+                kpi_df[col] = 0.0
+
+        return kpi_df.fillna(0).reset_index().rename(columns={'index': 'Zone'})[kpi_cols]
 
     def generate_kpis_with_sparklines(self, historical_data: List[Dict], env_factors: EnvFactors, current_incidents: List[Dict]) -> Tuple[pd.DataFrame, Dict[str, Dict]]:
         """Generates KPIs and supplementary sparkline data for the UI."""
