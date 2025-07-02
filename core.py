@@ -1,5 +1,7 @@
 # core.py
 """
+Core business logic for the RedShield AI Phoenix application.# core.py
+"""
 Core business logic for the RedShield AI Phoenix application.
 
 This module contains the primary classes responsible for data management,
