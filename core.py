@@ -34,9 +34,9 @@ class AdvancedAnalyticsLayer:
 
     @staticmethod
     def _calculate_hmm_risk(kpi_df_with_zone_col):
-        if kpi_df_with_zone_col.empty: return pd.Series(0.0)
-        risk = kpi_df_with_zone_col['Ensemble Risk Score']
-        return risk.rolling(window=3, min_periods=1).mean()
+        if kpi_df_with_zone_col.empty: return pd.Series(0.0, index=kpi_df_with_zone_col.set_index('Zone').index)
+        risk = kpi_df_with_zone_col.set_index('Zone')['Ensemble Risk Score']
+        return risk.rolling(window=3, min_periods=1).mean().values
 
     @staticmethod
     def _calculate_gnn_risk(road_graph):
@@ -46,9 +46,9 @@ class AdvancedAnalyticsLayer:
 
     @staticmethod
     def _calculate_game_theory_tension(kpi_df_with_zone_col):
-        if kpi_df_with_zone_col.empty: return pd.Series(0.0)
+        if kpi_df_with_zone_col.empty: return pd.Series(0.0, index=kpi_df_with_zone_col.set_index('Zone').index)
         tension = kpi_df_with_zone_col['Expected Incident Volume'] * (1 - kpi_df_with_zone_col['Resource Adequacy Index'])
-        return tension / (tension.max() + 1e-9)
+        return (tension / (tension.max() + 1e-9)).values
 
 # --- Optional Dependency Handling ---
 from typing import TYPE_CHECKING
@@ -149,8 +149,11 @@ class DataManager:
         self.zones = list(self.data_config['zones'].keys())
         self.zones_gdf = self._build_zones_gdf()
         self.road_graph = self._build_road_graph()
-        self.ambulances = self._initialize_ambulances()
         self.laplacian_matrix = self._compute_laplacian_matrix()
+        # SME FIX: Initialization moved to __init__ for one-time setup.
+        # This ensures the ambulance state is created once and can be modified
+        # by the simulation without being reset on every rerun.
+        self.ambulances = self._initialize_ambulances()
 
     def _build_road_graph(self) -> nx.Graph:
         """Builds the road network graph from configuration."""
@@ -264,7 +267,7 @@ class DataManager:
         zone_areas = self.zones_gdf.geometry.area.values
         total_area = zone_areas.sum()
         
-        if total_area < 1e-9: # Check for a sum of zero area
+        if total_area < 1e-9:
             logger.error("Total area of all zones is zero. Cannot generate incidents. Check zone polygon definitions in config.")
             return []
         
@@ -362,20 +365,8 @@ class PredictiveAnalyticsEngine:
     def generate_kpis(_self, historical_data: List[Dict], env_factors: EnvFactors, current_incidents: List[Dict]) -> pd.DataFrame:
         """
         Master method to generate all Key Performance Indicators (KPIs).
-        This optimized version unpacks parameters and structures calculations for clarity.
+        This version robustly handles the zero-incident case by calculating latent risk.
         """
-        kpi_cols = [
-            'Incident Probability', 'Expected Incident Volume', 'Risk Entropy', 'Anomaly Score', 'Spatial Spillover Risk',
-            'Resource Adequacy Index', 'Chaos Sensitivity Score', 'Bayesian Confidence Score', 'Information Value Index',
-            'Response Time Estimate', 'Trauma Clustering Score', 'Disease Surge Score', 'Violence Clustering Score',
-            'Accident Clustering Score', 'Medical Surge Score', 'Ensemble Risk Score', 'STGP_Risk', 'HMM_State_Risk',
-            'GNN_Structural_Risk', 'Game_Theory_Tension', 'Integrated_Risk_Score'
-        ]
-        
-        # --- SME FIX: Final Robust Logic for Zero-Incident State ---
-        # The logic now correctly handles the zero-incident case by calculating latent risk
-        # instead of returning a completely empty dataframe.
-        
         all_incidents = [inc for h in historical_data for inc in h.get('incidents', []) if isinstance(h, dict)] + current_incidents
         
         kpi_df = pd.DataFrame(index=_self.dm.zones)
@@ -386,17 +377,19 @@ class PredictiveAnalyticsEngine:
             incident_counts = pd.Series(0, index=_self.dm.zones)
         else:
             incident_df = pd.DataFrame(all_incidents).drop_duplicates(subset=['id'], keep='first')
-            if not incident_df.empty and 'location' in incident_df.columns:
+            if not incident_df.empty and 'location' in incident_df.columns and not incident_df['location'].isnull().all():
                 incident_gdf = gpd.GeoDataFrame(
                     incident_df, 
                     geometry=[Point(loc['lon'], loc['lat']) for loc in incident_df['location']], 
                     crs="EPSG:4326"
                 )
                 incidents_with_zones = gpd.sjoin(incident_gdf, _self.dm.zones_gdf.reset_index(), how="inner", predicate="within").rename(columns={'name': 'Zone'})
+            
+            if not incidents_with_zones.empty:
                 incident_counts = incidents_with_zones['Zone'].value_counts().reindex(_self.dm.zones, fill_value=0)
             else:
                  incident_counts = pd.Series(0, index=_self.dm.zones)
-
+        
         params = _self.model_params
         hawkes_params = params.get('hawkes_process', {})
         sir_params = params.get('sir_model', {})
@@ -457,9 +450,9 @@ class PredictiveAnalyticsEngine:
         kpi_df_with_zone_col = kpi_df.reset_index().rename(columns={'index': 'Zone'})
         
         kpi_df['STGP_Risk'] = AdvancedAnalyticsLayer._calculate_stgp_risk(incidents_with_zones, _self.dm.zones_gdf)
-        kpi_df['HMM_State_Risk'] = AdvancedAnalyticsLayer._calculate_hmm_risk(kpi_df_with_zone_col).values
+        kpi_df['HMM_State_Risk'] = AdvancedAnalyticsLayer._calculate_hmm_risk(kpi_df_with_zone_col)
         kpi_df['GNN_Structural_Risk'] = _self.gnn_structural_risk
-        kpi_df['Game_Theory_Tension'] = AdvancedAnalyticsLayer._calculate_game_theory_tension(kpi_df_with_zone_col).values
+        kpi_df['Game_Theory_Tension'] = AdvancedAnalyticsLayer._calculate_game_theory_tension(kpi_df_with_zone_col)
 
         kpi_df['Integrated_Risk_Score'] = (
             adv_weights.get('base_ensemble', 0.5) * kpi_df['Ensemble Risk Score'] +
@@ -469,12 +462,7 @@ class PredictiveAnalyticsEngine:
             adv_weights.get('game_theory', 0.1) * kpi_df['Game_Theory_Tension']
         ).clip(0, 1)
         
-        # Ensure all columns are present before returning
-        for col in kpi_cols:
-            if col not in kpi_df.columns:
-                kpi_df[col] = 0.0
-
-        return kpi_df.fillna(0).reset_index().rename(columns={'index': 'Zone'})[kpi_cols]
+        return kpi_df.fillna(0).reset_index()
 
     def generate_kpis_with_sparklines(self, historical_data: List[Dict], env_factors: EnvFactors, current_incidents: List[Dict]) -> Tuple[pd.DataFrame, Dict[str, Dict]]:
         """Generates KPIs and supplementary sparkline data for the UI."""
