@@ -17,7 +17,7 @@ import warnings
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
@@ -38,6 +38,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
+# SME FIX: Import GlobalHydra to handle initialization errors on Streamlit reruns
+from hydra.core.global_hydra import GlobalHydra
+
 
 # --- Importación de módulos refactorizados (DESPUÉS de st.set_page_config) ---
 from core import DataManager, EnvFactors, PredictiveAnalyticsEngine
@@ -54,6 +57,8 @@ CONSTANTS = {
 }
 
 # --- Configuración Post-Página ---
+# Note: st.cache_data.clear() is often used for debugging, but can be removed in production
+# if caching behavior is stable and desired across sessions.
 st.cache_data.clear()
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
@@ -69,6 +74,21 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+# --- SME FIX: Caching Core Services for Performance ---
+@st.cache_resource
+def load_services(config: DictConfig) -> Tuple[DataManager, PredictiveAnalyticsEngine]:
+    """
+    Initializes and caches the core services (DataManager, PredictiveAnalyticsEngine).
+    This function runs only once per session, preventing expensive re-initializations
+    on every user interaction and dramatically improving app performance.
+    """
+    logger.info("PERFORMANCE: Initializing DataManager and PredictiveAnalyticsEngine for the first time.")
+    config_dict = OmegaConf.to_container(config, resolve=True)
+    data_manager = DataManager(config_dict)
+    engine = PredictiveAnalyticsEngine(data_manager, config_dict)
+    return data_manager, engine
 
 
 # --- Clase de Datos Personalizada para Reruns Eficientes ---
@@ -207,7 +227,8 @@ class Dashboard:
 
     def _render_dynamic_map(self, map_gdf: gpd.GeoDataFrame, incidents: List[Dict], _ambulances: Dict):
         try:
-            center = map_gdf.unary_union.centroid
+            # SME FIX: Replaced deprecated 'unary_union' with 'union_all()'
+            center = map_gdf.union_all().centroid
             m = folium.Map(location=[center.y, center.x], zoom_start=11, tiles="cartodbpositron", prefer_canvas=True)
             folium.Choropleth(geo_data=map_gdf, data=map_gdf, columns=['name','Integrated_Risk_Score'], key_on='feature.properties.name', fill_color='YlOrRd', fill_opacity=0.7, line_opacity=0.2, legend_name='Puntaje de Riesgo Integrado', name="Mapa de Calor de Riesgo").add_to(m)
             inc_fg = MarkerCluster(name='Incidentes en Vivo', show=True).add_to(m)
@@ -935,9 +956,8 @@ class Dashboard:
 def main(config: DictConfig):
     """Función principal para inicializar y ejecutar la aplicación."""
     try:
-        config_dict = OmegaConf.to_container(config, resolve=True)
-        data_manager = DataManager(config_dict)
-        engine = PredictiveAnalyticsEngine(data_manager, config_dict)
+        # SME FIX: Load services from the cache instead of re-creating them on every run.
+        data_manager, engine = load_services(config)
         dashboard = Dashboard(data_manager, engine)
         dashboard.render()
     except Exception as e:
@@ -945,4 +965,7 @@ def main(config: DictConfig):
         st.error(f"Ocurrió un error fatal en la aplicación: {e}. Por favor, revise los registros y el archivo de configuración.")
 
 if __name__ == "__main__":
-    main()
+    # SME FIX: This check prevents Hydra from trying to re-initialize itself during Streamlit
+    # reruns, which would cause the application to crash.
+    if not GlobalHydra.instance().is_initialized():
+        main()
