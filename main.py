@@ -78,14 +78,18 @@ logger = logging.getLogger(__name__)
 
 # --- SME FIX: Caching Core Services for Performance ---
 @st.cache_resource
-def load_services(config: DictConfig) -> Tuple[DataManager, PredictiveAnalyticsEngine]:
+# SME FIX: The 'config' argument is renamed to '_config'.
+# The leading underscore tells Streamlit's caching mechanism to IGNORE this argument
+# when creating a hash key. This prevents the UnhashableParamError because the
+# complex DictConfig object is no longer being hashed.
+def load_services(_config: DictConfig) -> Tuple[DataManager, PredictiveAnalyticsEngine]:
     """
     Initializes and caches the core services (DataManager, PredictiveAnalyticsEngine).
     This function runs only once per session, preventing expensive re-initializations
     on every user interaction and dramatically improving app performance.
     """
     logger.info("PERFORMANCE: Initializing DataManager and PredictiveAnalyticsEngine for the first time.")
-    config_dict = OmegaConf.to_container(config, resolve=True)
+    config_dict = OmegaConf.to_container(_config, resolve=True)
     data_manager = DataManager(config_dict)
     engine = PredictiveAnalyticsEngine(data_manager, config_dict)
     return data_manager, engine
@@ -227,7 +231,7 @@ class Dashboard:
 
     def _render_dynamic_map(self, map_gdf: gpd.GeoDataFrame, incidents: List[Dict], _ambulances: Dict):
         try:
-            # SME FIX: Replaced deprecated 'unary_union' with 'union_all()'
+            # Replaced deprecated 'unary_union' with 'union_all()'
             center = map_gdf.union_all().centroid
             m = folium.Map(location=[center.y, center.x], zoom_start=11, tiles="cartodbpositron", prefer_canvas=True)
             folium.Choropleth(geo_data=map_gdf, data=map_gdf, columns=['name','Integrated_Risk_Score'], key_on='feature.properties.name', fill_color='YlOrRd', fill_opacity=0.7, line_opacity=0.2, legend_name='Puntaje de Riesgo Integrado', name="Mapa de Calor de Riesgo").add_to(m)
@@ -956,16 +960,22 @@ class Dashboard:
 def main(config: DictConfig):
     """Función principal para inicializar y ejecutar la aplicación."""
     try:
-        # SME FIX: Load services from the cache instead of re-creating them on every run.
+        # Load services from the cache instead of re-creating them on every run.
+        # The '_config' argument name is used here to match the cached function signature.
         data_manager, engine = load_services(config)
         dashboard = Dashboard(data_manager, engine)
         dashboard.render()
     except Exception as e:
-        logger.critical(f"Ocurrió un error fatal durante el inicio de la aplicación: {e}", exc_info=True)
-        st.error(f"Ocurrió un error fatal en la aplicación: {e}. Por favor, revise los registros y el archivo de configuración.")
+        # Check if the error is the specific unhashable param error to provide a more helpful message
+        if isinstance(e, st.errors.UnhashableTypeError):
+             logger.critical(f"A non-cacheable object was passed to a cached function. Error: {e}", exc_info=True)
+             st.error(f"Error de caché de la aplicación: Se intentó cachear un objeto no válido. Revise los registros para más detalles.")
+        else:
+             logger.critical(f"Ocurrió un error fatal durante el inicio de la aplicación: {e}", exc_info=True)
+             st.error(f"Ocurrió un error fatal en la aplicación: {e}. Por favor, revise los registros y el archivo de configuración.")
 
 if __name__ == "__main__":
-    # SME FIX: This check prevents Hydra from trying to re-initialize itself during Streamlit
+    # This check prevents Hydra from trying to re-initialize itself during Streamlit
     # reruns, which would cause the application to crash.
     if not GlobalHydra.instance().is_initialized():
         main()
