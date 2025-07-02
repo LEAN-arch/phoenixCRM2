@@ -222,45 +222,41 @@ class DataManager:
         if num_incidents == 0:
             return []
         
-        city_boundary = self.zones_gdf.union_all()
-        bounds = city_boundary.bounds
-        
         incident_types = list(self.data_config.get('distributions', {}).get('incident_type', {}).keys())
         if not incident_types:
             logger.warning("No incident types in config. Cannot generate synthetic incidents.")
             return []
 
-        # --- SME FIX: GUARANTEED-COUNT GENERATION ---
-        # This loop ensures the function is deterministic and reliably produces the
-        # requested number of incidents, instead of probabilistically failing.
-        valid_points = []
-        max_attempts = 20  # Safety break to prevent infinite loops on bad config
-        attempts = 0
-        while len(valid_points) < num_incidents and attempts < max_attempts:
-            # Generate a batch of candidates in each iteration
-            num_to_generate_this_round = (num_incidents - len(valid_points)) * 2
-            lons = np.random.uniform(bounds[0], bounds[2], num_to_generate_this_round)
-            lats = np.random.uniform(bounds[1], bounds[3], num_to_generate_this_round)
-            
-            points = gpd.GeoSeries([Point(lon, lat) for lon, lat in zip(lons, lats)], crs="EPSG:4326")
-            
-            # Append newly found valid points to our list
-            newly_found = points[points.within(city_boundary)]
-            if not newly_found.empty:
-                valid_points.extend(newly_found.tolist())
-            attempts += 1
-        
-        if attempts >= max_attempts:
-            logger.critical(f"CRITICAL: Synthetic generation hit max attempts ({max_attempts}) without finding enough points. "
-                          f"Generated {len(valid_points)} of {num_incidents} requested. Check zone polygon definitions.")
-
-        if not valid_points:
-            logger.error("Failed to generate any valid synthetic points within the city boundary.")
-            return []
-
-        # We now have a list of valid Shapely Point objects. Create incidents from them.
+        # --- SME FIX: ROBUST GIS-BASED SAMPLING ---
+        # This method is deterministic and efficient. It samples from within zones directly,
+        # avoiding the inefficient and failure-prone city-wide bounding box method.
         incidents = []
-        for i, point in enumerate(valid_points[:num_incidents]): # Slice to get the exact number
+        
+        # Create sampling weights based on zone area to make generation more realistic
+        zone_names = self.zones_gdf.index.tolist()
+        zone_areas = self.zones_gdf.geometry.area.values
+        total_area = zone_areas.sum()
+        
+        if total_area == 0:
+            logger.error("Total area of all zones is zero. Cannot generate incidents.")
+            return []
+        
+        sampling_weights = zone_areas / total_area
+        
+        for i in range(num_incidents):
+            # 1. Pick a zone, weighted by its area
+            random_zone_name = np.random.choice(zone_names, p=sampling_weights)
+            zone_poly = self.zones_gdf.loc[random_zone_name].geometry
+            minx, miny, maxx, maxy = zone_poly.bounds
+            
+            # 2. Find a point *within* that specific zone's polygon
+            point = None
+            while point is None:
+                p = Point(np.random.uniform(minx, maxx), np.random.uniform(miny, maxy))
+                if zone_poly.contains(p):
+                    point = p
+            
+            # 3. Create the incident
             incidents.append({
                 'id': f"SYN-{i}",
                 'type': np.random.choice(incident_types),
