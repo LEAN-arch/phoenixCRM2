@@ -110,7 +110,6 @@ class TCNN(nn.Module if TORCH_AVAILABLE else object):
     def forward(self, x: "torch.Tensor") -> "torch.Tensor":
         """Forward pass for the TCNN model."""
         if not TORCH_AVAILABLE or self.model is None:
-            # SME FIX: Ensure a torch.Tensor is returned even if torch is available but model is not.
             return torch.zeros(x.shape[0], self.output_size) if TORCH_AVAILABLE else None # type: ignore
         return self.model(x)
 
@@ -220,37 +219,48 @@ class DataManager:
             num_incidents = int(np.random.poisson(intensity))
             logger.info(f"Generating {num_incidents} synthetic incidents based on environmental factors.")
         
-        # SME FIX: If the model predicts zero incidents, return immediately.
         if num_incidents == 0:
             return []
         
-        # SME FIX: Replaced deprecated 'unary_union' with 'union_all()' for modern geopandas API.
         city_boundary = self.zones_gdf.union_all()
         bounds = city_boundary.bounds
         
-        incidents = []
         incident_types = list(self.data_config.get('distributions', {}).get('incident_type', {}).keys())
         if not incident_types:
             logger.warning("No incident types in config. Cannot generate synthetic incidents.")
             return []
+
+        # --- SME FIX: GUARANTEED-COUNT GENERATION ---
+        # This loop ensures the function is deterministic and reliably produces the
+        # requested number of incidents, instead of probabilistically failing.
+        valid_points = []
+        max_attempts = 20  # Safety break to prevent infinite loops on bad config
+        attempts = 0
+        while len(valid_points) < num_incidents and attempts < max_attempts:
+            # Generate a batch of candidates in each iteration
+            num_to_generate_this_round = (num_incidents - len(valid_points)) * 2
+            lons = np.random.uniform(bounds[0], bounds[2], num_to_generate_this_round)
+            lats = np.random.uniform(bounds[1], bounds[3], num_to_generate_this_round)
+            
+            points = gpd.GeoSeries([Point(lon, lat) for lon, lat in zip(lons, lats)], crs="EPSG:4326")
+            
+            # Append newly found valid points to our list
+            newly_found = points[points.within(city_boundary)]
+            if not newly_found.empty:
+                valid_points.extend(newly_found.tolist())
+            attempts += 1
         
-        # SME FIX: Generate a larger pool of candidate points to guarantee we get enough valid ones.
-        # This prevents the critical bug where random points fall outside the city boundary by chance.
-        num_to_generate = max(num_incidents * 3, 20) # Generate 3x the required points, or at least 20.
-        lons = np.random.uniform(bounds[0], bounds[2], num_to_generate)
-        lats = np.random.uniform(bounds[1], bounds[3], num_to_generate)
-        
-        # Filter points to only those within the actual city polygons.
-        points = gpd.GeoSeries([Point(lon, lat) for lon, lat in zip(lons, lats)], crs="EPSG:4326")
-        valid_points = points[points.within(city_boundary)]
-        
-        # SME FIX: Add a critical log if we still fail to generate points, which indicates a config error.
-        if valid_points.empty:
-            logger.critical(f"CRITICAL: Failed to generate any valid synthetic points within the city boundary after {num_to_generate} attempts. Check zone polygon definitions in config.")
+        if attempts >= max_attempts:
+            logger.critical(f"CRITICAL: Synthetic generation hit max attempts ({max_attempts}) without finding enough points. "
+                          f"Generated {len(valid_points)} of {num_incidents} requested. Check zone polygon definitions.")
+
+        if not valid_points:
+            logger.error("Failed to generate any valid synthetic points within the city boundary.")
             return []
 
-        # Take the required number of incidents from the valid points.
-        for i, point in enumerate(valid_points.head(num_incidents)):
+        # We now have a list of valid Shapely Point objects. Create incidents from them.
+        incidents = []
+        for i, point in enumerate(valid_points[:num_incidents]): # Slice to get the exact number
             incidents.append({
                 'id': f"SYN-{i}",
                 'type': np.random.choice(incident_types),
@@ -258,9 +268,6 @@ class DataManager:
                 'location': {'lat': point.y, 'lon': point.x},
                 'timestamp': datetime.utcnow().isoformat()
             })
-            
-        if len(incidents) < num_incidents:
-            logger.warning(f"Could only generate {len(incidents)} of the {num_incidents} requested synthetic incidents that fell within zone boundaries.")
             
         return incidents
 
@@ -345,15 +352,12 @@ class PredictiveAnalyticsEngine:
         # --- I. Initial Setup & Data Preparation ---
         all_incidents = [inc for h in historical_data for inc in h.get('incidents', []) if isinstance(h, dict)] + current_incidents
         
-        # --- SME FIX: SAFETY NET ---
-        # If there are no incidents from any source, return a correctly structured DataFrame
-        # with all columns and zero values. This prevents the entire UI from breaking.
+        # --- SAFETY NET ---
         if not all_incidents:
             logger.info("No incidents found (real or synthetic). Returning a zero-value KPI DataFrame.")
             kpi_df = pd.DataFrame(0, index=_self.dm.zones, columns=kpi_cols)
             kpi_df.index.name = 'Zone'
             return kpi_df.reset_index()
-        # --- END OF FIX ---
 
         kpi_df = pd.DataFrame(index=_self.dm.zones)
         incident_df = pd.DataFrame(all_incidents).drop_duplicates(subset=['id'], keep='first')
@@ -397,11 +401,9 @@ class PredictiveAnalyticsEngine:
         prior_dist = pd.Series(_self.data_config.get('distributions', {}).get('zone', {})).reindex(_self.dm.zones, fill_value=1e-9)
         current_dist = incident_counts / (incident_counts.sum() + 1e-9)
         
-        # --- SME FIX: NUMERICAL STABILITY ---
-        # Add a small epsilon (1e-9) to prevent log(0) errors and RuntimeWarning.
+        # --- NUMERICAL STABILITY ---
         kpi_df['Anomaly Score'] = np.nansum(current_dist * np.log((current_dist + 1e-9) / (prior_dist + 1e-9)))
         kpi_df['Risk Entropy'] = -np.nansum(current_dist * np.log2(current_dist + 1e-9))
-        # --- END OF FIX ---
         
         kpi_df['Chaos Sensitivity Score'] = _self._calculate_lyapunov_exponent(historical_data)
         base_probs = (baseline_rate * prior_dist * _self.dm.zones_gdf['crime_rate_modifier']).clip(0, 1)
