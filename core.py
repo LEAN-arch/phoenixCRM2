@@ -39,7 +39,7 @@ try:
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
-    class nn: Module = object
+    class nn: Module = object # type: ignore
     logging.info("PyTorch or MLflow not found. TCNN model will be disabled.")
 
 try:
@@ -49,9 +49,9 @@ try:
     PGMPY_AVAILABLE = True
 except ImportError:
     PGMPY_AVAILABLE = False
-    class BayesianNetwork: pass
-    class TabularCPD: pass
-    class VariableElimination: pass
+    class BayesianNetwork: pass # type: ignore
+    class TabularCPD: pass # type: ignore
+    class VariableElimination: pass # type: ignore
     logging.info("pgmpy not found. Bayesian network will be disabled.")
 
 # --- System Setup ---
@@ -110,7 +110,8 @@ class TCNN(nn.Module if TORCH_AVAILABLE else object):
     def forward(self, x: "torch.Tensor") -> "torch.Tensor":
         """Forward pass for the TCNN model."""
         if not TORCH_AVAILABLE or self.model is None:
-            return torch.zeros(x.shape[0], self.output_size)
+            # SME FIX: Ensure a torch.Tensor is returned even if torch is available but model is not.
+            return torch.zeros(x.shape[0], self.output_size) if TORCH_AVAILABLE else None # type: ignore
         return self.model(x)
 
 
@@ -219,24 +220,48 @@ class DataManager:
             num_incidents = int(np.random.poisson(intensity))
             logger.info(f"Generating {num_incidents} synthetic incidents based on environmental factors.")
         
-        if num_incidents == 0: return []
+        # SME FIX: If the model predicts zero incidents, return immediately.
+        if num_incidents == 0:
+            return []
         
+        # SME FIX: Replaced deprecated 'unary_union' with 'union_all()' for modern geopandas API.
         city_boundary = self.zones_gdf.union_all()
         bounds = city_boundary.bounds
+        
         incidents = []
         incident_types = list(self.data_config.get('distributions', {}).get('incident_type', {}).keys())
         if not incident_types:
             logger.warning("No incident types in config. Cannot generate synthetic incidents.")
             return []
         
-        num_to_generate = int(num_incidents * 1.5)
+        # SME FIX: Generate a larger pool of candidate points to guarantee we get enough valid ones.
+        # This prevents the critical bug where random points fall outside the city boundary by chance.
+        num_to_generate = max(num_incidents * 3, 20) # Generate 3x the required points, or at least 20.
         lons = np.random.uniform(bounds[0], bounds[2], num_to_generate)
         lats = np.random.uniform(bounds[1], bounds[3], num_to_generate)
-        points = gpd.GeoSeries([Point(lon, lat) for lon, lat in zip(lons, lats)])
+        
+        # Filter points to only those within the actual city polygons.
+        points = gpd.GeoSeries([Point(lon, lat) for lon, lat in zip(lons, lats)], crs="EPSG:4326")
         valid_points = points[points.within(city_boundary)]
         
+        # SME FIX: Add a critical log if we still fail to generate points, which indicates a config error.
+        if valid_points.empty:
+            logger.critical(f"CRITICAL: Failed to generate any valid synthetic points within the city boundary after {num_to_generate} attempts. Check zone polygon definitions in config.")
+            return []
+
+        # Take the required number of incidents from the valid points.
         for i, point in enumerate(valid_points.head(num_incidents)):
-            incidents.append({'id': f"SYN-{i}", 'type': np.random.choice(incident_types), 'triage': 'Red', 'location': {'lat': point.y, 'lon': point.x}, 'timestamp': datetime.utcnow().isoformat()})
+            incidents.append({
+                'id': f"SYN-{i}",
+                'type': np.random.choice(incident_types),
+                'triage': 'Red',
+                'location': {'lat': point.y, 'lon': point.x},
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            
+        if len(incidents) < num_incidents:
+            logger.warning(f"Could only generate {len(incidents)} of the {num_incidents} requested synthetic incidents that fell within zone boundaries.")
+            
         return incidents
 
     def generate_sample_history_file(self) -> io.BytesIO:
@@ -320,8 +345,9 @@ class PredictiveAnalyticsEngine:
         # --- I. Initial Setup & Data Preparation ---
         all_incidents = [inc for h in historical_data for inc in h.get('incidents', []) if isinstance(h, dict)] + current_incidents
         
-        # --- THIS IS THE FIX ---
-        # If there are no incidents, return a correctly structured DataFrame with all columns and zero values.
+        # --- SME FIX: SAFETY NET ---
+        # If there are no incidents from any source, return a correctly structured DataFrame
+        # with all columns and zero values. This prevents the entire UI from breaking.
         if not all_incidents:
             logger.info("No incidents found (real or synthetic). Returning a zero-value KPI DataFrame.")
             kpi_df = pd.DataFrame(0, index=_self.dm.zones, columns=kpi_cols)
@@ -370,8 +396,13 @@ class PredictiveAnalyticsEngine:
         baseline_rate *= day_time_multiplier * event_multiplier
         prior_dist = pd.Series(_self.data_config.get('distributions', {}).get('zone', {})).reindex(_self.dm.zones, fill_value=1e-9)
         current_dist = incident_counts / (incident_counts.sum() + 1e-9)
-        kpi_df['Anomaly Score'] = np.nansum(current_dist * np.log(current_dist / (prior_dist + 1e-9)))
-        kpi_df['Risk Entropy'] = -np.nansum(current_dist * np.log2(current_dist.replace(0, 1e-9)))
+        
+        # --- SME FIX: NUMERICAL STABILITY ---
+        # Add a small epsilon (1e-9) to prevent log(0) errors and RuntimeWarning.
+        kpi_df['Anomaly Score'] = np.nansum(current_dist * np.log((current_dist + 1e-9) / (prior_dist + 1e-9)))
+        kpi_df['Risk Entropy'] = -np.nansum(current_dist * np.log2(current_dist + 1e-9))
+        # --- END OF FIX ---
+        
         kpi_df['Chaos Sensitivity Score'] = _self._calculate_lyapunov_exponent(historical_data)
         base_probs = (baseline_rate * prior_dist * _self.dm.zones_gdf['crime_rate_modifier']).clip(0, 1)
         kpi_df['Incident Probability'] = base_probs
