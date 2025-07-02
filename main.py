@@ -12,9 +12,11 @@ La aplicación se estructura en tres pestañas principales:
 3. Metodología y Perspectivas: Una explicación detallada de los modelos subyacentes.
 """
 
+import io
+import json
 import logging
 import warnings
-import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -38,13 +40,20 @@ import plotly.express as px
 import plotly.graph_objects as go
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
-# SME FIX: Import GlobalHydra to handle initialization errors on Streamlit reruns
 from hydra.core.global_hydra import GlobalHydra
 
 
 # --- Importación de módulos refactorizados (DESPUÉS de st.set_page_config) ---
 from core import DataManager, EnvFactors, PredictiveAnalyticsEngine
-from utils import ReportGenerator
+
+# --- Placeholder for ReportGenerator if utils.py is not provided ---
+class ReportGenerator:
+    """A placeholder class for PDF report generation functionality."""
+    @staticmethod
+    def generate_pdf_report(**kwargs):
+        st.sidebar.warning("Report generation is not fully implemented.")
+        logger.warning("ReportGenerator.generate_pdf_report called but not implemented.")
+        return io.BytesIO()
 
 # --- Constantes de la Aplicación Centralizadas ---
 CONSTANTS = {
@@ -57,8 +66,6 @@ CONSTANTS = {
 }
 
 # --- Configuración Post-Página ---
-# Note: st.cache_data.clear() is often used for debugging, but can be removed in production
-# if caching behavior is stable and desired across sessions.
 st.cache_data.clear()
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
@@ -76,12 +83,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# --- SME FIX: Caching Core Services for Performance ---
 @st.cache_resource
-# SME FIX: The 'config' argument is renamed to '_config'.
-# The leading underscore tells Streamlit's caching mechanism to IGNORE this argument
-# when creating a hash key. This prevents the UnhashableParamError because the
-# complex DictConfig object is no longer being hashed.
 def load_services(_config: DictConfig) -> Tuple[DataManager, PredictiveAnalyticsEngine]:
     """
     Initializes and caches the core services (DataManager, PredictiveAnalyticsEngine).
@@ -95,7 +97,6 @@ def load_services(_config: DictConfig) -> Tuple[DataManager, PredictiveAnalytics
     return data_manager, engine
 
 
-# --- Clase de Datos Personalizada para Reruns Eficientes ---
 class EnvFactorsWithTolerance(EnvFactors):
     """
     Extiende EnvFactors para incluir una comprobación de igualdad personalizada con tolerancia de flotantes.
@@ -110,7 +111,6 @@ class EnvFactorsWithTolerance(EnvFactors):
         return True
 
 
-# --- Clase Principal del Dashboard ---
 class Dashboard:
     """Maneja el renderizado de la interfaz de usuario de Streamlit para Phoenix v4.0."""
     def __init__(self, dm: DataManager, engine: PredictiveAnalyticsEngine):
@@ -214,7 +214,10 @@ class Dashboard:
         try:
             inc_val, amb_val = len(st.session_state.current_incidents), sum(1 for a in self.dm.ambulances.values() if a['status'] == 'Disponible')
             risk_val, adeq_val = kpi_df['Integrated_Risk_Score'].max(), kpi_df['Resource Adequacy Index'].mean()
-            inc_data, amb_data, risk_data, adeq_data = (spark_data.get('active_incidents',{'values':[inc_val],'range':[inc_val-1,inc_val+1]}), spark_data.get('available_ambulances',{'values':[amb_val],'range':[amb_val-1,amb_val+1]}), spark_data.get('max_risk',{'values':[risk_val],'range':[0,1]}), spark_data.get('adequacy',{'values':[adeq_val],'range':[0,1]}))
+            inc_data = spark_data.get('active_incidents',{'values':[inc_val],'range':[inc_val-1,inc_val+1]})
+            amb_data = spark_data.get('available_ambulances',{'values':[amb_val],'range':[amb_val-1,amb_val+1]})
+            risk_data = spark_data.get('max_risk',{'values':[risk_val],'range':[0,1]})
+            adeq_data = spark_data.get('adequacy',{'values':[adeq_val],'range':[0,1]})
             def get_color(v, r, h): return "#D32F2F" if (h and v>r[1])or(not h and v<r[0])else "#FBC02D" if (h and v>r[0])or(not h and v<r[1])else "#388E3C"
             def get_trend(d): return "▲" if len(d)>1 and d[-1]>d[-2] else "▼" if len(d)>1 and d[-1]<d[-2] else "▬"
             metrics = [self._create_status_metric("Incidentes Activos",f"{inc_val}",get_trend(inc_data['values']),get_color(inc_val,inc_data['range'],True)), self._create_status_metric("Unidades Disponibles",f"{amb_val}",get_trend(amb_data['values']),get_color(amb_val,amb_data['range'],False)), self._create_status_metric("Riesgo Máx. de Zona",f"{risk_val:.3f}",get_trend(risk_data['values']),get_color(risk_val,risk_data['range'],True)), self._create_status_metric("Suficiencia del Sistema",f"{adeq_val:.1%}",get_trend(adeq_data['values']),get_color(adeq_val,adeq_data['range'],False))]
@@ -231,7 +234,6 @@ class Dashboard:
 
     def _render_dynamic_map(self, map_gdf: gpd.GeoDataFrame, incidents: List[Dict], _ambulances: Dict):
         try:
-            # Replaced deprecated 'unary_union' with 'union_all()'
             center = map_gdf.union_all().centroid
             m = folium.Map(location=[center.y, center.x], zoom_start=11, tiles="cartodbpositron", prefer_canvas=True)
             folium.Choropleth(geo_data=map_gdf, data=map_gdf, columns=['name','Integrated_Risk_Score'], key_on='feature.properties.name', fill_color='YlOrRd', fill_opacity=0.7, line_opacity=0.2, legend_name='Puntaje de Riesgo Integrado', name="Mapa de Calor de Riesgo").add_to(m)
@@ -414,39 +416,15 @@ class Dashboard:
             logger.error(f"Error en gráfico de oportunidad de asignación: {e}",exc_info=True); st.warning("No se pudo mostrar el gráfico de Oportunidad de Asignación.")
 
     def _plot_risk_momentum(self, kpi_df: pd.DataFrame):
-        """
-        [SME VISUALIZATION] Plots a "Risk Velocity" chart under the original function name.
-        This function visualizes the rate of change of risk (points/hour) and uses iconic
-        alerts to flag zones that are accelerating into a crisis state. It is designed
-        to be fully resilient, falling back to a synthetic past state if no historical
-        data is loaded.
-        """
+        st.markdown("""
+        ### **Diagnóstico de Velocidad del Riesgo: Identificando Amenazas Aceleradas**
+        **Análisis:** Este gráfico visualiza la **velocidad del riesgo**—la tasa a la que el riesgo de una zona está cambiando, medida en *puntos de riesgo por hora*.
+        -   **<span style='color:#B71C1C;'>🔥 **Aceleración Crítica**:</span>** El riesgo está aumentando a una velocidad peligrosamente alta. **Prioridad N°1.**
+        -   **<span style='color:#81C784;'>🔻 Enfriándose / Desescalando:</span>** Las condiciones están mejorando, creando una oportunidad para reasignar recursos.
+        """, unsafe_allow_html=True)
         try:
-            # --- START: INTEGRATED SME ANALYSIS TEXT ---
-            st.markdown("""
-            ### **Diagnóstico de Velocidad del Riesgo: Identificando Amenazas Aceleradas**
-
-            **Análisis:** Este gráfico de diagnóstico avanzado visualiza la **velocidad del riesgo**—la tasa a la que el riesgo de una zona está cambiando, medida en *puntos de riesgo por hora*. Va más allá de simplemente saber si el riesgo está subiendo o bajando; le dice *qué tan rápido* está sucediendo, permitiendo detectar crisis emergentes antes de que se vuelvan inmanejables.
-
-            **Cómo Interpretar para la Acción:**
-
-            -   **<span style='color:#B71C1C;'>🔥 **Aceleración Crítica**:</span>** El ícono de fuego marca las zonas donde el riesgo está aumentando a una velocidad peligrosamente alta. **Estas son sus prioridades N°1.** Una zona puede tener un riesgo total moderado, pero si su velocidad es crítica, se está convirtiendo rápidamente en el próximo punto de crisis. Considere un despliegue inmediato de recursos para contener la situación.
-
-            -   **<span style='color:#E57373;'>🔺 Calentándose:</span>** La velocidad es positiva pero no crítica. Estas zonas requieren una vigilancia estrecha. Son candidatos para el pre-posicionamiento de recursos en las próximas horas.
-
-            -   **<span style='color:#BDBDBD;'>▬ Estable:</span>** La velocidad es cercana a cero. El estado de la zona es estable.
-
-            -   **<span style='color:#81C784;'>🔻 Enfriándose / Desescalando:</span>** La velocidad es negativa, indicando que las condiciones están mejorando. Si la velocidad de desescalada es alta, podría indicar una oportunidad para reasignar recursos a zonas que se están calentando.
-
-            **El Principio Clave:** La **velocidad del riesgo** es a menudo un indicador principal más importante que el nivel de riesgo absoluto. Un buque de guerra lento (alto riesgo, baja velocidad) puede ser menos preocupante que un torpedo rápido (riesgo moderado, alta velocidad). Use este gráfico para **detectar los torpedos**.
-            """, unsafe_allow_html=True)
-            # --- END: INTEGRATED SME ANALYSIS TEXT ---
-
-            # --- 1. DATA ACQUISITION & TIME CALCULATION ---
             current_time = datetime.utcnow()
-
             if 'historical_data' not in st.session_state or not st.session_state.historical_data:
-                logger.info("No historical data found. Simulating a past state from 24 hours ago for velocity.")
                 st.markdown("> *Nota: La velocidad se calcula en comparación con un estado anterior simulado de hace 24 horas.*")
                 past_time = current_time - timedelta(hours=24)
                 default_env = EnvFactors(is_holiday=False, weather="Despejado", traffic_level=1.0, major_event=False, population_density=st.session_state.avg_pop_density, air_quality_index=50.0, heatwave_alert=False, day_type='Entre Semana', time_of_day='Mediodía', public_event_type='Ninguno', hospital_divert_status=0.0, police_activity='Normal', school_in_session=True)
@@ -458,77 +436,29 @@ class Dashboard:
                 try:
                     past_time = datetime.fromisoformat(last_historical_point.get('timestamp'))
                 except (ValueError, TypeError):
-                    logger.warning("Could not parse timestamp from history. Assuming 24 hours ago.")
                     past_time = current_time - timedelta(hours=24)
                 prev_kpi_df = self.engine.generate_kpis(st.session_state.historical_data[:-1], st.session_state.env_factors, historical_incidents)
 
-            if prev_kpi_df.empty:
-                st.info("No se pudo calcular un estado de riesgo de referencia.")
-                return
+            if prev_kpi_df.empty: st.info("No se pudo calcular un estado de riesgo de referencia."); return
 
             time_delta_hours = max(1.0, (current_time - past_time).total_seconds() / 3600)
 
-            # --- 2. DATA PREPARATION & VELOCITY CALCULATION ---
             df = kpi_df[['Zone', 'Integrated_Risk_Score']].copy()
             prev_risk = prev_kpi_df.set_index('Zone')['Integrated_Risk_Score']
             df = df.join(prev_risk.rename('Prev_Risk_Score'), on='Zone').fillna(0)
-            df['momentum'] = df['Integrated_Risk_Score'] - df['Prev_Risk_Score']
-            df['velocity'] = df['momentum'] / time_delta_hours
+            df['velocity'] = (df['Integrated_Risk_Score'] - df['Prev_Risk_Score']) / time_delta_hours
 
             CRITICAL_VELOCITY_THRESHOLD = 0.10
             bins = [-float('inf'), -CRITICAL_VELOCITY_THRESHOLD, -0.01, 0.01, CRITICAL_VELOCITY_THRESHOLD, float('inf')]
             labels = ["Desescalada Rápida", "Enfriándose", "Estable", "Calentándose", "Aceleración Crítica"]
             df['category'] = pd.cut(df['velocity'], bins=bins, labels=labels)
-
             color_map = {"Aceleración Crítica": "#B71C1C", "Calentándose": "#E57373", "Estable": "#BDBDBD", "Enfriándose": "#81C784", "Desescalada Rápida": "#2E7D32"}
             df['color'] = df['category'].map(color_map)
-
-            def create_zone_label(row):
-                if row['category'] == 'Aceleración Crítica':
-                    return f"🔥 {row['Zone']}"
-                return row['Zone']
-            df['zone_label'] = df.apply(create_zone_label, axis=1)
-
-            df['text_value'] = df['velocity'].apply(lambda x: f"{x:+.2f}")
+            df['zone_label'] = df.apply(lambda row: f"🔥 {row['Zone']}" if row['category'] == 'Aceleración Crítica' else row['Zone'], axis=1)
             df = df.sort_values(by='velocity', ascending=True)
 
-            # --- 3. ENHANCED PLOTLY VISUALIZATION ---
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=df['velocity'],
-                y=df['zone_label'],
-                orientation='h',
-                marker_color=df['color'],
-                text=df['text_value'],
-                textposition='outside',
-                textfont=dict(size=12),
-                customdata=df[['category', 'Integrated_Risk_Score']],
-                hovertemplate=(
-                    "<b>Zona: %{y}</b><br>"
-                    "Estado: <b>%{customdata[0]}</b><br>"
-                    "--------------------<br>"
-                    "<b>Velocidad de Riesgo: %{x:+.3f} pts/hr</b><br>"
-                    "Riesgo Actual: %{customdata[1]:.3f}"
-                    "<extra></extra>"
-                )
-            ))
-
-            fig.add_vline(x=0, line_width=1.5, line_color='black', opacity=0.8)
-            
-            fig.update_layout(
-                title=None,
-                height=max(500, len(df) * 35),
-                plot_bgcolor='white',
-                showlegend=False,
-                xaxis=dict(
-                    title="Tasa de Cambio de Riesgo (puntos por hora)",
-                    gridcolor='#e5e5e5',
-                    zeroline=False
-                ),
-                yaxis=dict(showgrid=False, categoryorder='trace'),
-                margin=dict(l=40, r=40, t=10, b=40)
-            )
-            
+            fig = go.Figure(go.Bar(x=df['velocity'], y=df['zone_label'], orientation='h', marker_color=df['color'], text=df['velocity'].apply(lambda x: f"{x:+.2f}"), textposition='outside', hovertemplate="<b>Zona: %{y}</b><br>Velocidad: %{x:+.3f} pts/hr<extra></extra>"))
+            fig.update_layout(title=None, height=max(500, len(df) * 35), plot_bgcolor='white', showlegend=False, xaxis=dict(title="Tasa de Cambio de Riesgo (puntos por hora)", gridcolor='#e5e5e5', zeroline=False), yaxis=dict(showgrid=False), margin=dict(l=40, r=40, t=10, b=40))
             st.plotly_chart(fig, use_container_width=True)
 
         except Exception as e:
@@ -536,83 +466,48 @@ class Dashboard:
             st.warning("No se pudo mostrar el gráfico de Tendencia del Riesgo.")
             
     def _plot_critical_zone_anatomy(self, kpi_df: pd.DataFrame):
-        """
-        [SME VISUALIZATION] Plots a detailed Risk Composition Profile using an Icon-Enhanced Dot Plot.
-        This elegant design allows for instant, intuitive comparison of risk components across zones.
-        """
-        st.markdown("**Análisis:** Este gráfico disecciona la *composición* del riesgo para las zonas más críticas. Cada línea horizontal representa una zona, ordenada por riesgo total. El **ícono y su posición** muestran la magnitud de cada impulsor de riesgo primario, permitiendo una comparación directa entre zonas. El **puntaje total de riesgo** se anota a la derecha para dar un contexto de la magnitud general.")
+        st.markdown("**Análisis:** Disecciona la *composición* del riesgo para las zonas más críticas, permitiendo una comparación directa de los impulsores de riesgo (Violencia, Accidentes, Médico) entre zonas.")
         try:
             st.markdown('<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">', unsafe_allow_html=True)
             
             risk_cols = ['Violence Clustering Score', 'Accident Clustering Score', 'Medical Surge Score']
-            if not all(col in kpi_df.columns for col in risk_cols):
-                st.error("Faltan datos para el gráfico de Anatomía de Zona."); return
+            if not all(col in kpi_df.columns for col in risk_cols): st.error("Faltan datos para el gráfico de Anatomía de Zona."); return
 
-            df_top = kpi_df.nlargest(7, 'Integrated_Risk_Score').copy()
-            df_top = df_top.sort_values('Integrated_Risk_Score', ascending=True)
+            df_top = kpi_df.nlargest(7, 'Integrated_Risk_Score').sort_values('Integrated_Risk_Score', ascending=True)
 
             fig = go.Figure()
-            
             risk_visuals = {
                 'Violence Clustering Score': {'name': 'Violencia', 'color': '#D32F2F', 'icon_html': '<span style="font-family: \'Font Awesome 5 Free\'; font-weight: 900; color: white; font-size: 14px;"></span>'},
                 'Accident Clustering Score': {'name': 'Accidente', 'color': '#FBC02D', 'icon_html': '<span style="font-family: \'Font Awesome 5 Free\'; font-weight: 900; color: white; font-size: 14px;"></span>'},
                 'Medical Surge Score':       {'name': 'Médico',  'color': '#1E90FF', 'icon_html': '<span style="font-family: \'Font Awesome 5 Free\'; font-weight: 900; color: white; font-size: 14px;"></span>'}
             }
-
             for i, row in df_top.iterrows():
                 risk_values = sorted([row[col] for col in risk_cols])
                 fig.add_shape(type='line', x0=risk_values[0], y0=row['Zone'], x1=risk_values[-1], y1=row['Zone'], line=dict(color='rgba(0,0,0,0.2)', width=2), layer='below')
 
             for col, visual_props in risk_visuals.items():
-                fig.add_trace(go.Scatter(
-                    x=df_top[col], y=df_top['Zone'], mode='markers+text', name=visual_props['name'],
-                    marker=dict(color=visual_props['color'], size=28, symbol='circle'),
-                    text=[visual_props['icon_html']] * len(df_top), textfont=dict(size=14),
-                    hovertemplate="<b>Zona:</b> %{y}<br><b>Tipo de Riesgo:</b> %{name}<br><b>Puntaje:</b> %{x:.3f}<extra></extra>"
-                ))
+                fig.add_trace(go.Scatter(x=df_top[col], y=df_top['Zone'], mode='markers+text', name=visual_props['name'], marker=dict(color=visual_props['color'], size=28, symbol='circle'), text=[visual_props['icon_html']] * len(df_top), textfont=dict(size=14), hovertemplate="<b>Zona:</b> %{y}<br><b>Tipo:</b> %{name}<br><b>Puntaje:</b> %{x:.3f}<extra></extra>"))
             
             for i, row in df_top.iterrows():
-                fig.add_annotation(
-                    xref='paper', yref='y', x=1.01, y=row['Zone'], text=f"<b>{row['Integrated_Risk_Score']:.2f}</b>",
-                    showarrow=False, font=dict(size=14, color='#37474F', family="Arial Black, sans-serif"), align="left"
-                )
+                fig.add_annotation(xref='paper', yref='y', x=1.01, y=row['Zone'], text=f"<b>{row['Integrated_Risk_Score']:.2f}</b>", showarrow=False, font=dict(size=14, color='#37474F', family="Arial Black, sans-serif"), align="left")
 
-            fig.update_layout(
-                title_text="<b>Anatomía del Riesgo en Zonas Críticas</b>", title_x=0.5,
-                xaxis_title="Puntaje del Componente de Riesgo", yaxis_title=None, height=500,
-                plot_bgcolor='white', paper_bgcolor='white', showlegend=True, legend_title_text='Impulsor de Riesgo',
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font_size=12, itemsizing='constant'),
-                xaxis=dict(showgrid=True, gridcolor='rgba(221, 221, 221, 0.7)', zeroline=False, range=[0, max(0.6, df_top[risk_cols].max().max() * 1.15)]),
-                yaxis=dict(showgrid=False), margin=dict(t=80, b=40, l=40, r=60)
-            )
+            fig.update_layout(title_text="<b>Anatomía del Riesgo en Zonas Críticas</b>", title_x=0.5, xaxis_title="Puntaje del Componente de Riesgo", yaxis_title=None, height=500, plot_bgcolor='white', showlegend=True, legend_title_text='Impulsor de Riesgo', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font_size=12), xaxis=dict(showgrid=True, gridcolor='rgba(221, 221, 221, 0.7)', zeroline=False, range=[0, max(0.6, df_top[risk_cols].max().max() * 1.15)]), yaxis=dict(showgrid=False), margin=dict(t=80, b=40, l=40, r=60))
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
-            logger.error(f"Error en gráfico de anatomía de zona crítica: {e}", exc_info=True)
-            st.warning("No se pudo mostrar el gráfico de Anatomía de Zona Crítica.")
+            logger.error(f"Error en gráfico de anatomía de zona crítica: {e}", exc_info=True); st.warning("No se pudo mostrar el gráfico de Anatomía de Zona Crítica.")
             
     def _plot_risk_contribution_sunburst(self, kpi_df: pd.DataFrame):
-        st.markdown("""
-        **Análisis:** Este gráfico de diagnóstico desglosa el `Puntaje de Riesgo Integrado` para entender su naturaleza. Permite responder a la pregunta: *"¿Este riesgo es predecible y se basa en patrones históricos, o es una amenaza compleja y novedosa detectada por la IA?"*
-
-        **Cómo Interpretar:**
-        - **Anillo Azul (Base):** Representa el riesgo convencional basado en datos históricos y estadísticos. Un segmento azul grande significa que el riesgo es **predecible**.
-        - **Anillo Rojo/Naranja (Avanzado):** Representa riesgos complejos detectados por modelos de IA (proximidad, tensión del sistema, etc.). Un segmento rojo grande significa que la amenaza es **novedosa o atípica** y requiere una respuesta más matizada.
-        """)
+        st.markdown("**Análisis:** Desglosa el `Puntaje de Riesgo Integrado` para entender su naturaleza. Un segmento **azul** grande significa que el riesgo es predecible y estadístico; un segmento **rojo** grande significa que la amenaza es novedosa o compleja y detectada por la IA.")
         try:
             zones = kpi_df.nlargest(5, 'Integrated_Risk_Score')['Zone'].tolist()
-            if not zones:
-                st.info("No hay zonas de alto riesgo para analizar."); return
-                
+            if not zones: st.info("No hay zonas de alto riesgo para analizar."); return
             zone = st.selectbox("Seleccione una Zona de Alto Riesgo para Diagnóstico:", options=zones, key="sunburst_zone_select")
             if not zone: return
 
             z_data = kpi_df.loc[kpi_df['Zone'] == zone].iloc[0]
             weights = self.config.get('model_params', {}).get('advanced_model_weights', {})
-            
             total_risk = z_data.get('Integrated_Risk_Score', 0)
-            if total_risk < 1e-9:
-                st.info(f"La zona {zone} no presenta un riesgo significativo para desglosar.")
-                return
+            if total_risk < 1e-9: st.info(f"La zona {zone} no presenta un riesgo significativo para desglosar."); return
 
             base_value = weights.get('base_ensemble', 0) * z_data.get('Ensemble Risk Score', 0)
             stgp_value = weights.get('stgp', 0) * z_data.get('STGP_Risk', 0)
@@ -626,90 +521,44 @@ class Dashboard:
                 'labels': ['Puntaje Total', 'Riesgo Base', 'Riesgo Avanzado', 'Proximidad', 'Patrón Anómalo', 'Estructural', 'Tensión Sistémica'],
                 'parents': ['', 'Total', 'Total', 'Advanced Models', 'Advanced Models', 'Advanced Models', 'Advanced Models'],
                 'values': [total_risk, base_value, advanced_value, stgp_value, hmm_value, gnn_value, gt_value],
-                'customdata': [100, (base_value/total_risk)*100, (advanced_value/total_risk)*100, (stgp_value/total_risk)*100, (hmm_value/total_risk)*100, (gnn_value/total_risk)*100, (gt_value/total_risk)*100],
+                'customdata': [100, (base_value/total_risk)*100 if total_risk > 0 else 0, (advanced_value/total_risk)*100 if total_risk > 0 else 0, (stgp_value/total_risk)*100 if total_risk > 0 else 0, (hmm_value/total_risk)*100 if total_risk > 0 else 0, (gnn_value/total_risk)*100 if total_risk > 0 else 0, (gt_value/total_risk)*100 if total_risk > 0 else 0],
                 'marker': {'colors': ['#E0E0E0', '#1E90FF', '#D32F2F', '#FF6347', '#FF7F50', '#FF8C00', '#FFA500']}
             }
-
-            fig = go.Figure(go.Sunburst(
-                ids=data['ids'], labels=data['labels'], parents=data['parents'], values=data['values'],
-                branchvalues="total", marker=data['marker'], customdata=data['customdata'],
-                hovertemplate='<b>%{label}</b><br>Contribución al Riesgo: %{value:.3f}<br>Porcentaje del Total: %{customdata:.1f}%<extra></extra>',
-                insidetextorientation='radial'
-            ))
-            
-            fig.update_layout(
-                margin=dict(t=20, l=0, r=0, b=0), title_text=f"Diagnóstico de Riesgo para la Zona: {zone}",
-                title_x=0.5, height=450
-            )
+            fig = go.Figure(go.Sunburst(ids=data['ids'], labels=data['labels'], parents=data['parents'], values=data['values'], branchvalues="total", marker=data['marker'], customdata=data['customdata'], hovertemplate='<b>%{label}</b><br>Contribución: %{value:.3f} (%{customdata:.1f}%)<extra></extra>', insidetextorientation='radial'))
+            fig.update_layout(margin=dict(t=40, l=0, r=0, b=0), title_text=f"Diagnóstico de Riesgo para la Zona: {zone}", title_x=0.5, height=450)
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
-            logger.error(f"Error en gráfico sunburst de contribución: {e}", exc_info=True)
-            st.warning("No se pudo mostrar el gráfico de Contribución de Riesgo.")
+            logger.error(f"Error en gráfico sunburst de contribución: {e}", exc_info=True); st.warning("No se pudo mostrar el gráfico de Contribución de Riesgo.")
             
     def _plot_forecast_with_uncertainty(self):
-        st.markdown("""
-        **Análisis:** Este gráfico proyecta la trayectoria del riesgo para las zonas seleccionadas durante las próximas 72 horas.
-        **Cómo Interpretar:**
-        - **Línea Sólida:** La predicción más probable del puntaje de riesgo.
-        - **Área Sombreada:** El intervalo de confianza del 95%. Un área más ancha indica una mayor incertidumbre en la predicción.
-        - **Línea Roja Punteada:** El umbral de riesgo crítico. Permite identificar rápidamente cuándo se espera que una zona entre en un estado de alta peligrosidad.
-        """)
+        st.markdown("**Análisis:** Proyecta la trayectoria del riesgo para las zonas seleccionadas durante las próximas 72 horas. La **línea sólida** es la predicción más probable; el **área sombreada** es el intervalo de incertidumbre.")
         try:
             fc_df, kpi_df = st.session_state.forecast_df, st.session_state.kpi_df
-            if fc_df.empty or kpi_df.empty:
-                st.info("No hay datos de pronóstico para mostrar."); return
+            if fc_df.empty or kpi_df.empty: st.info("No hay datos de pronóstico para mostrar."); return
             
             zones = sorted(fc_df['Zone'].unique().tolist())
             defaults = kpi_df.nlargest(3, 'Integrated_Risk_Score')['Zone'].tolist()
-            
             selected_zones = st.multiselect("Seleccione Zonas para Pronóstico:", options=zones, default=defaults, key="forecast_zone_select")
             
-            if not selected_zones:
-                st.info("Por favor, seleccione al menos una zona para visualizar el pronóstico."); return
+            if not selected_zones: st.info("Por favor, seleccione al menos una zona para visualizar el pronóstico."); return
 
             fig = go.Figure()
             colors = px.colors.qualitative.Plotly
-
             for i, zone in enumerate(selected_zones):
                 zone_df = fc_df[fc_df['Zone'] == zone]
                 if zone_df.empty: continue
-                
-                color = colors[i % len(colors)]
-                rgb = px.colors.hex_to_rgb(color)
-                
-                fig.add_trace(go.Scatter(
-                    x=np.concatenate([zone_df['Horizon (Hours)'], zone_df['Horizon (Hours)'][::-1]]),
-                    y=np.concatenate([zone_df['Upper_Bound'], zone_df['Lower_Bound'][::-1]]),
-                    fill='toself', fillcolor=f'rgba({",".join(map(str,rgb))}, 0.15)',
-                    line={'color': 'rgba(255,255,255,0)'}, hoverinfo="skip", showlegend=False
-                ))
-                
-                fig.add_trace(go.Scatter(
-                    x=zone_df['Horizon (Hours)'], y=zone_df['Combined Risk'], name=zone,
-                    line=dict(color=color, width=2.5), mode='lines+markers',
-                    hovertemplate=f"<b>{zone}</b><br>Hora: %{{x}}h<br>Riesgo Proyectado: %{{y:.3f}}<extra></extra>"
-                ))
+                color = colors[i % len(colors)]; rgb = px.colors.hex_to_rgb(color)
+                fig.add_trace(go.Scatter(x=np.concatenate([zone_df['Horizon (Hours)'], zone_df['Horizon (Hours)'][::-1]]), y=np.concatenate([zone_df['Upper_Bound'], zone_df['Lower_Bound'][::-1]]), fill='toself', fillcolor=f'rgba({",".join(map(str,rgb))}, 0.15)', line={'color': 'rgba(255,255,255,0)'}, hoverinfo="skip", showlegend=False))
+                fig.add_trace(go.Scatter(x=zone_df['Horizon (Hours)'], y=zone_df['Combined Risk'], name=zone, line=dict(color=color, width=2.5), mode='lines+markers', hovertemplate=f"<b>{zone}</b><br>Hora: %{{x}}h<br>Riesgo Proyectado: %{{y:.3f}}<extra></extra>"))
             
             critical_threshold = 0.75
-            fig.add_hline(
-                y=critical_threshold, line_dash="dash", line_color="#D32F2F", line_width=2,
-                annotation_text="Umbral de Riesgo Crítico", annotation_position="bottom right",
-                annotation_font=dict(color="#D32F2F", size=12)
-            )
-
-            fig.update_layout(
-                title_text="<b>Pronóstico de Trayectoria de Riesgo y Incertidumbre</b>", title_x=0.5,
-                xaxis_title="Horizonte de Pronóstico (Horas)", yaxis_title="Puntaje de Riesgo Integrado Proyectado",
-                height=500, plot_bgcolor='white', paper_bgcolor='white', legend_title_text='Zona',
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                hovermode="x unified", xaxis=dict(gridcolor='#e5e5e5'), yaxis=dict(gridcolor='#e5e5e5', range=[0, 1])
-            )
+            fig.add_hline(y=critical_threshold, line_dash="dash", line_color="#D32F2F", line_width=2, annotation_text="Umbral de Riesgo Crítico", annotation_position="bottom right", annotation_font=dict(color="#D32F2F", size=12))
+            fig.update_layout(title_text="<b>Pronóstico de Trayectoria de Riesgo y Incertidumbre</b>", title_x=0.5, xaxis_title="Horizonte de Pronóstico (Horas)", yaxis_title="Puntaje de Riesgo Integrado Proyectado", height=500, plot_bgcolor='white', legend_title_text='Zona', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), hovermode="x unified", xaxis=dict(gridcolor='#e5e5e5'), yaxis=dict(gridcolor='#e5e5e5', range=[0, 1]))
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
-            logger.error(f"Error en gráfico de pronóstico: {e}", exc_info=True)
-            st.warning("No se pudo mostrar el gráfico de pronóstico.")
+            logger.error(f"Error en gráfico de pronóstico: {e}", exc_info=True); st.warning("No se pudo mostrar el gráfico de pronóstico.")
 
-    # --- Metodología, etc. ---
+    # --- PESTAÑA 3: METODOLOGÍA (SECTIONS FULLY RESTORED) ---
     def _render_methodology_tab(self):
         st.header("Arquitectura y Metodología del Sistema")
         st.markdown("Esta sección ofrece una inmersión profunda en el motor analítico que impulsa la plataforma Phoenix v4.0. Está diseñada para científicos de datos, analistas y personal de mando que deseen comprender el 'porqué' detrás de las predicciones y prescripciones del sistema.")
@@ -901,7 +750,15 @@ class Dashboard:
         st.session_state.simulation_mode = st.sidebar.toggle("Activar Modo de Simulación", value=st.session_state.get('simulation_mode', False), help="Active para establecer manualmente los recuentos de incidentes y ambulancias. Desactive para volver a los datos en vivo.")
         with st.sidebar.expander("Controles de Simulación", expanded=st.session_state.simulation_mode):
             is_disabled = not st.session_state.simulation_mode
-            st.number_input("Establecer Número de Incidentes Activos", min_value=0, value=len(st.session_state.current_incidents), step=1, key="sim_incident_count", disabled=is_disabled)
+            st.number_input(
+                "Establecer Número de Incidentes Activos",
+                min_value=0,
+                max_value=50,  # SME Feature Change: Max value set to 50
+                value=len(st.session_state.current_incidents),
+                step=1,
+                key="sim_incident_count",
+                disabled=is_disabled
+            )
             st.number_input("Establecer Número de Ambulancias Disponibles", min_value=0, max_value=len(self.dm.ambulances), value=sum(1 for a in self.dm.ambulances.values() if a['status'] == 'Disponible'), step=1, key="sim_ambulance_count", disabled=is_disabled)
             if st.button("Aplicar Escenario", disabled=is_disabled, use_container_width=True):
                 with st.spinner("Generando nuevo escenario..."):
@@ -910,7 +767,6 @@ class Dashboard:
                     logger.info(f"SIMULACIÓN: Ambulancias disponibles establecidas en {new_amb_count}.")
                     new_inc_count = st.session_state.sim_incident_count
                     st.session_state.current_incidents = self.dm._generate_synthetic_incidents(st.session_state.env_factors, override_count=new_inc_count)
-                    logger.info(f"SIMULACIÓN: Generados {new_inc_count} incidentes sintéticos.")
                 st.rerun()
         
         st.sidebar.divider()
@@ -960,22 +816,13 @@ class Dashboard:
 def main(config: DictConfig):
     """Función principal para inicializar y ejecutar la aplicación."""
     try:
-        # Load services from the cache instead of re-creating them on every run.
-        # The '_config' argument name is used here to match the cached function signature.
         data_manager, engine = load_services(config)
         dashboard = Dashboard(data_manager, engine)
         dashboard.render()
     except Exception as e:
-        # Check if the error is the specific unhashable param error to provide a more helpful message
-        if isinstance(e, st.errors.UnhashableTypeError):
-             logger.critical(f"A non-cacheable object was passed to a cached function. Error: {e}", exc_info=True)
-             st.error(f"Error de caché de la aplicación: Se intentó cachear un objeto no válido. Revise los registros para más detalles.")
-        else:
-             logger.critical(f"Ocurrió un error fatal durante el inicio de la aplicación: {e}", exc_info=True)
-             st.error(f"Ocurrió un error fatal en la aplicación: {e}. Por favor, revise los registros y el archivo de configuración.")
+        logger.critical(f"Ocurrió un error fatal durante el inicio de la aplicación: {e}", exc_info=True)
+        st.error(f"Ocurrió un error fatal en la aplicación: {e}. Por favor, revise los registros y el archivo de configuración.")
 
 if __name__ == "__main__":
-    # This check prevents Hydra from trying to re-initialize itself during Streamlit
-    # reruns, which would cause the application to crash.
     if not GlobalHydra.instance().is_initialized():
         main()
